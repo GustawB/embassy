@@ -1,0 +1,13 @@
+[package]
+name = "embassy-ti-cc2650"
+version = "0.1.0"
+edition = "2024"
+links = "driverlib"
+
+[dependencies]
+cc2650 = "0.1.1"
+cty = "0.2.2"
+
+[build-dependencies]
+bindgen = { version = "0.72.1" }
+cc = "1.2.60"
