@@ -7,5 +7,9 @@ use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
-    loop {}
+    /*let p = embassy_ti_cc2650::init();
+    let mut led = Output::new(p.P0_13, Level::Low);
+
+    led.set_high();
+    loop {}*/
 }

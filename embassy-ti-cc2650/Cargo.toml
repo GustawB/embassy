@@ -7,6 +7,7 @@ links = "driverlib"
 [dependencies]
 cc2650 = "0.1.1"
 cty = "0.2.2"
+embassy-hal-internal = { version = "0.5.0", path = "../embassy-hal-internal", features = ["cortex-m"] }
 
 [build-dependencies]
 bindgen = { version = "0.72.1" }
