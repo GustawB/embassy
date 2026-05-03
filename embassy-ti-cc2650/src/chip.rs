@@ -1,3 +1,5 @@
+use crate::gpio::impl_pin;
+
 embassy_hal_internal::peripherals! {
     UART,
 

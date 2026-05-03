@@ -1,4 +1,4 @@
-/// Stores an ongoing TX/RX transaction
+/*/// Stores an ongoing TX/RX transaction
 struct Transaction {
     /// The buffer containing the bytes to transmit as it should be returned to
     /// the client
@@ -217,4 +217,4 @@ impl<'a> UartFull<'a> {
         // - transmit interrupt
         self.uart.imsc.modify(|_r, w| w.txim().clear_bit())
     }
-}
+}*/

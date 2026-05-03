@@ -1,4 +1,9 @@
+#![macro_use]
+
 use crate::driverlib;
+use embassy_hal_internal::Peri;
+use embassy_hal_internal::PeripheralType;
+use embassy_hal_internal::impl_peripheral;
 
 mod internals {
     use core::ops::Deref;
@@ -33,7 +38,6 @@ pub enum Pull {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Level {
     /// Logical low.
     Low,
@@ -41,16 +45,16 @@ pub enum Level {
     High,
 }
 
-pub struct Input {
-    pub(crate) gpio_pin: Peri<'d, Pin>,
+pub struct Input<'d> {
+    pub(crate) gpio_pin: GPIOPin<'d>,
 }
 
-impl Input {
+impl<'d> Input<'d> {
     /// Create GPIO input driver for a [Pin] with the provided [Pull] configuration.
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, pull: Pull) -> Self {
         let gpio_pin = GPIOPin::new(pin);
-        pin.make_input(pull);
+        gpio_pin.make_input(pull);
         Self { gpio_pin }
     }
 
@@ -67,11 +71,11 @@ impl Input {
     }
 }
 
-pub struct Output {
-    pub(crate) gpio_pin: Peri<'d, Pin>,
+pub struct Output<'d> {
+    pub(crate) gpio_pin: GPIOPin<'d>,
 }
 
-impl Output {
+impl<'d> Output<'d> {
     pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
         let gpio_pin = GPIOPin::new(pin);
         gpio_pin.make_output();
@@ -117,24 +121,23 @@ pub(crate) trait SealedPin {
     fn pin_port(&self) -> u32;
 }
 
-pub trait Pin: PeripheralType + SealedPin + Sized + 'static {
+pub trait Pin: PeripheralType + Into<AnyPin> + SealedPin + Sized + 'static {
     #[inline]
     fn pin(&self) -> u32 {
-        self._pin()
+        self.pin_port()
     }
 }
 
-pub(crate) struct GPIOPin {
-    pin: u32,
+pub(crate) struct GPIOPin<'d> {
+    pin: Peri<'d, AnyPin>,
     pin_mask: u32,
 }
 
-impl GPIOPin {
-    const fn new(pin: Peri<'d, impl Pin>) -> Self {
-        Self {
-            pin: pin.pin(),
-            pin_mask: 1 << pin.pin(),
-        }
+impl<'d> GPIOPin<'d> {
+    fn new(pin: Peri<'d, impl Pin>) -> Self {
+        let any_pin = pin.into();
+        let pin_mask = 1 << any_pin.pin();
+        Self { pin: any_pin, pin_mask }
     }
 
     fn make_input(&self, mode: Pull) {
@@ -145,7 +148,7 @@ impl GPIOPin {
 
     fn make_output(&self) {
         self.enable_gpio();
-        self.enable_input();
+        self.enable_output();
     }
 
     fn set_high(&self) {
@@ -176,14 +179,15 @@ impl GPIOPin {
         !self.is_high()
     }
 
-    pub fn enable_gpio(&self) {
+    fn enable_gpio(&self) {
         // Driverlib is better here: cc2650 crate requires either matching over 32 options or a lot of unsafe.
         // OTOH both IOCPortConfigure{G,S}et are present in ROM.
-        let pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin) };
-        unsafe { driverlib::IOCPortConfigureSet(self.pin, driverlib::IOC_PORT_GPIO, pin_config) };
+        let pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin.pin()) };
+        unsafe { driverlib::IOCPortConfigureSet(self.pin.pin(), driverlib::IOC_PORT_GPIO, pin_config) };
     }
 
     fn enable_output(&self) {
+        //self.set_floating_state(Pull::None);
         // unsafe { driverlib::GPIO_setOutputEnableDio(self.pin, driverlib::GPIO_OUTPUT_ENABLE) };
         GPIO.doe31_0.modify(|_r, w| unsafe { w.bits(self.pin_mask) });
     }
@@ -191,9 +195,9 @@ impl GPIOPin {
     fn enable_input(&self) {
         // Driverlib is better here: cc2650 crate requires either matching over 32 options or a lot of unsafe.
         // OTOH both IOCPortConfigure{G,S}et are present in ROM.
-        let mut pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin) };
+        let mut pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin.pin()) };
         pin_config |= driverlib::IOC_INPUT_ENABLE;
-        unsafe { driverlib::IOCPortConfigureSet(self.pin, driverlib::IOC_PORT_GPIO, pin_config) };
+        unsafe { driverlib::IOCPortConfigureSet(self.pin.pin(), driverlib::IOC_PORT_GPIO, pin_config) };
     }
 
     fn set_floating_state(&self, mode: Pull) {
@@ -204,26 +208,39 @@ impl GPIOPin {
             Pull::None => driverlib::IOC_NO_IOPULL,
         };
 
-        unsafe { driverlib::IOCIOPortPullSet(self.pin, mode) }
+        unsafe { driverlib::IOCIOPortPullSet(self.pin.pin(), mode) }
     }
 }
 
-impl SealedPin for GPIOPin {
+/// Type-erased GPIO pin
+pub struct AnyPin {
+    pub(crate) pin_port: u32,
+}
+
+impl_peripheral!(AnyPin);
+impl Pin for AnyPin {}
+impl SealedPin for AnyPin {
+    #[inline]
     fn pin_port(&self) -> u32 {
-        self.pin
+        self.pin_port
     }
 }
-impl Pin for GPIOPin {}
-impl_peripheral!(GPIOPin);
 
 macro_rules! impl_pin {
     ($type:ident, $pin_num:expr) => {
         impl crate::gpio::Pin for peripherals::$type {}
         impl crate::gpio::SealedPin for peripherals::$type {
             #[inline]
-            fn pin_port(&self) -> u8 {
+            fn pin_port(&self) -> u32 {
                 $pin_num
+            }
+        }
+
+        impl From<peripherals::$type> for crate::gpio::AnyPin {
+            fn from(_val: peripherals::$type) -> Self {
+                Self { pin_port: $pin_num }
             }
         }
     };
 }
+pub(crate) use impl_pin;

@@ -3,15 +3,19 @@
 #![crate_type = "rlib"]
 #![warn(unreachable_pub)]
 
+use crate::chip::Peripherals;
+use crate::prcm::Prcm;
+
 mod ccfg;
 pub mod chip;
 pub mod driverlib;
 pub mod gpio;
+pub mod prcm;
 pub mod uart;
-pub mod udma;
+// pub mod udma;
 
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
-#[macro_export]
+/*#[macro_export]
 macro_rules! bind_interrupts {
     ($(#[$attr:meta])* $vis:vis struct $name:ident {
         $(
@@ -52,8 +56,21 @@ macro_rules! bind_interrupts {
     (@inner $($t:tt)*) => {
         $($t)*
     }
-}
+}*/
 
 pub fn init() -> Peripherals {
+    let peripherals = cc2650::Peripherals::take().unwrap();
+    let prcm = Prcm::new(peripherals.PRCM);
+
+    prcm.disable_domains(prcm::PowerDomains::empty().rfc());
+
+    // Now, with RFC disabled, configure MODESEL to mode that is appropriate for CC2650
+    // (other similar chips use different modes).
+    prcm.rfc_modesel_configure();
+
+    prcm.enable_domains(prcm::PowerDomains::empty().peripherals().serial());
+
+    prcm.enable_clocks(prcm::Clocks::empty().gpio().uart().gpt().dma().crypto().i2c());
+
     Peripherals::take()
 }
