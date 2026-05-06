@@ -1,7 +1,8 @@
 use crate::gpio::impl_pin;
+use crate::uart::impl_uart;
 
 embassy_hal_internal::peripherals! {
-    UART,
+    UART0,
 
     P_00,
     P_01,
@@ -36,6 +37,8 @@ embassy_hal_internal::peripherals! {
     P_30,
     P_31,
 }
+
+impl_uart!(UART0, UART0);
 
 impl_pin!(P_00, 0);
 impl_pin!(P_01, 1);

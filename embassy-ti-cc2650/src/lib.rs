@@ -5,6 +5,7 @@
 
 use crate::chip::Peripherals;
 use crate::prcm::Prcm;
+use crate::uart::{UartFull, UartPinConfig};
 
 mod ccfg;
 pub mod chip;
@@ -12,7 +13,7 @@ pub mod driverlib;
 pub mod gpio;
 pub mod prcm;
 pub mod uart;
-// pub mod udma;
+pub mod udma;
 
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
 /*#[macro_export]
@@ -57,6 +58,9 @@ macro_rules! bind_interrupts {
         $($t)*
     }
 }*/
+
+pub trait PinConfig: UartPinConfig + Copy {}
+impl<T> PinConfig for T where T: UartPinConfig + Copy {}
 
 pub fn init() -> Peripherals {
     let peripherals = cc2650::Peripherals::take().unwrap();
