@@ -122,6 +122,7 @@ pub(crate) trait SealedPin {
     fn pin_port(&self) -> u32;
 }
 
+#[allow(private_bounds)]
 pub trait Pin: PeripheralType + Into<AnyPin> + SealedPin + Sized + 'static {
     #[inline]
     fn pin(&self) -> u32 {

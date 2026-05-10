@@ -48,7 +48,7 @@ pub(crate) struct Udma {}
 
 impl Udma {
     #[inline(never)]
-    pub fn enable(&self) {
+    pub(crate) fn enable(&self) {
         // Set the pointer to the channel control map.
         let map_addr = addr_of!(CHANNEL_CONTROL_MAP) as u32;
 
@@ -60,7 +60,8 @@ impl Udma {
     }
 
     #[inline]
-    pub fn disable(&self) {
+    #[allow(unused)]
+    pub(crate) fn disable(&self) {
         LOCAL_UDMA.cfg.write(|w| w.masterenable().clear_bit());
     }
 
@@ -68,21 +69,23 @@ impl Udma {
     // only in `uart_transfer_{tx,rx}`.
 
     #[inline]
-    pub fn uart_disable_tx(&self) {
+    #[allow(unused)]
+    pub(crate) fn uart_disable_tx(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.disable(); // TX
         }
     }
 
     #[inline]
-    pub fn uart_disable_rx(&self) {
+    #[allow(unused)]
+    pub(crate) fn uart_disable_rx(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.disable(); // RX
         }
     }
 
     #[inline]
-    pub fn uart_channels_configure(&self) {
+    pub(crate) fn uart_channels_configure(&self) {
         let data_size = DataSize::Size8;
         let arbitration_size = ArbitrationSize::Arb32;
 
@@ -110,7 +113,7 @@ impl Udma {
     }
 
     #[inline]
-    pub fn uart_transfer_rx(&self, mem: &mut [u8]) {
+    pub(crate) fn uart_transfer_rx(&self, mem: &mut [u8]) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.set_transfer(
                 &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
@@ -122,7 +125,7 @@ impl Udma {
     }
 
     #[inline]
-    pub fn uart_transfer_tx(&self, mem: &[u8]) {
+    pub(crate) fn uart_transfer_tx(&self, mem: &[u8]) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
                 mem.as_ptr() as *mut (),
@@ -134,27 +137,29 @@ impl Udma {
     }
 
     #[inline]
-    pub fn uart_is_enabled_rx(&self) -> bool {
+    #[allow(unused)]
+    pub(crate) fn uart_is_enabled_rx(&self) -> bool {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.is_enabled() }
     }
 
     #[inline]
-    pub fn uart_is_enabled_tx(&self) -> bool {
+    #[allow(unused)]
+    pub(crate) fn uart_is_enabled_tx(&self) -> bool {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.is_enabled() }
     }
 
     #[inline]
-    pub fn uart_request_done_rx(&self) -> bool {
+    pub(crate) fn uart_request_done_rx(&self) -> bool {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.request_done() }
     }
 
     #[inline]
-    pub fn uart_request_done_tx(&self) -> bool {
+    pub(crate) fn uart_request_done_tx(&self) -> bool {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.request_done() }
     }
 
     #[inline]
-    pub fn uart_request_done_rx_clear(&self) {
+    pub(crate) fn uart_request_done_rx_clear(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
                 .primary_channel_1
@@ -163,7 +168,7 @@ impl Udma {
     }
 
     #[inline]
-    pub fn uart_request_done_tx_clear(&self) {
+    pub(crate) fn uart_request_done_tx_clear(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
                 .primary_channel_2

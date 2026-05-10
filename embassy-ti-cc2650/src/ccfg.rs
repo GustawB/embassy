@@ -2454,16 +2454,19 @@ mod ccfg_data {
     }
 }
 
-pub struct Ccfg {
+#[allow(unused)]
+pub(crate) struct Ccfg {
     ccfg: cc2650::CCFG,
 }
 
 impl Ccfg {
+    #[allow(unused)]
     pub(crate) fn new(ccfg: cc2650::CCFG) -> Self {
         Self { ccfg }
     }
 
-    pub fn ieee_mac(&self) -> Option<u64> {
+    #[allow(unused)]
+    pub(crate) fn ieee_mac(&self) -> Option<u64> {
         let mac = ((self.ccfg.ieee_mac_1.read().addr().bits() as u64) << 32)
             | self.ccfg.ieee_mac_0.read().addr().bits() as u64;
 
