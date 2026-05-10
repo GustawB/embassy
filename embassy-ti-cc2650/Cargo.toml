@@ -22,4 +22,6 @@ cc = "1.2.60"
 default = ["rt"]
 ## Cortex-M runtime (enabled by default)
 rt = ["cc2650/rt"]
-
+full_LOCAL_UDMA_table = []
+defmt = ["cc2650/defmt"]
+ieee = []

@@ -5,6 +5,7 @@ use std::ffi::OsStr;
 use std::fs::File;
 use std::io::Write;
 use std::iter::FromIterator;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -303,7 +304,7 @@ impl DriverlibBuilder {
         assert!(status.success(), "objcopy strip disabled ROM symbols failed");
 
         // Writes ROM symbols enabled in rom.h to a file with the given name.
-        fn get_enabled_rom_fns(sources: &PathBuf, enabled_rom_fns: &PathBuf) {
+        fn get_enabled_rom_fns(sources: &Path, enabled_rom_fns: &Path) {
             let rom_h = "rom.h";
             let status = Command::new("bash")
                 .arg("-c")
@@ -369,7 +370,7 @@ impl DriverlibBuilder {
         // with NOROM_* symbols having their prefix deleted.
         // `symbols` are already fetched symbols from `source` ELF,
         // `out` is used as a location for text file with the remapping.
-        fn rename_symbols(out: &PathBuf, symbols: &[u8], source: impl AsRef<OsStr>, target: impl AsRef<OsStr>) {
+        fn rename_symbols(out: &Path, symbols: &[u8], source: impl AsRef<OsStr>, target: impl AsRef<OsStr>) {
             let norom_symbols_remapping = out.join("norom_symbols_remapping.txt");
             let mut symbols = Vec::from_iter(symbols.split(|&c| c == b'\n'));
             symbols.retain(|sym| sym.starts_with(b"NOROM"));

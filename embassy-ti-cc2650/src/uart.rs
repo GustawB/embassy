@@ -200,11 +200,6 @@ impl UartFullRx {
         UART.dmactl.modify(|_r, w| w.rxdmae().set_bit());
     }
 
-    fn dma_stop_rx(&self) {
-        UDMA.uart_disable_rx();
-        UART.dmactl.modify(|_r, w| w.rxdmae().clear_bit());
-    }
-
     pub async fn read(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
         if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
@@ -260,11 +255,6 @@ impl UartFullTx {
 
     fn dma_start_tx(&self) {
         UART.dmactl.modify(|_r, w| w.txdmae().set_bit());
-    }
-
-    fn dma_stop_tx(&self) {
-        UDMA.uart_disable_tx();
-        UART.dmactl.modify(|_r, w| w.txdmae().clear_bit());
     }
 
     pub async fn write(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
