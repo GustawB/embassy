@@ -1,4 +1,5 @@
 use crate::driverlib;
+use crate::pac;
 
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -79,11 +80,11 @@ impl Into<u32> for PowerDomains {
 }
 
 pub struct Prcm {
-    prcm: cc2650::PRCM,
+    prcm: pac::PRCM,
 }
 
 impl Prcm {
-    pub fn new(prcm: cc2650::PRCM) -> Self {
+    pub fn new(prcm: pac::PRCM) -> Self {
         Self { prcm }
     }
 
@@ -171,7 +172,7 @@ impl Clocks {
 pub(crate) struct Clock;
 
 impl Clock {
-    fn reload_clock_controller(clkloadctl: &cc2650::prcm::CLKLOADCTL) {
+    fn reload_clock_controller(clkloadctl: &pac::prcm::CLKLOADCTL) {
         // Unfortunately, static inline fns.
         // driverlib::PRCMLoadSet();
         // while !driverlib::PRCMLoadGet() {}
@@ -185,7 +186,7 @@ impl Clock {
         }
     }
 
-    pub(crate) fn enable_clocks(prcm: &cc2650::prcm::RegisterBlock, clocks: Clocks) {
+    pub(crate) fn enable_clocks(prcm: &pac::prcm::RegisterBlock, clocks: Clocks) {
         if clocks.gpio {
             prcm.gpioclkgr.write(|w| w.clk_en().set_bit());
             prcm.gpioclkgs.write(|w| w.clk_en().set_bit());
@@ -223,7 +224,7 @@ impl Clock {
     }
 
     #[cfg(feature = "ieee")]
-    pub(crate) fn disable_clocks(prcm: &cc2650::prcm::RegisterBlock, clocks: Clocks) {
+    pub(crate) fn disable_clocks(prcm: &pac::prcm::RegisterBlock, clocks: Clocks) {
         if clocks.gpio {
             prcm.gpioclkgr.write(|w| w.clk_en().clear_bit());
             prcm.gpioclkgs.write(|w| w.clk_en().clear_bit());

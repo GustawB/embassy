@@ -6,9 +6,10 @@ use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::impl_peripheral;
 
 mod internals {
+    use crate::pac;
     use core::ops::Deref;
 
-    pub(super) struct Gpio(*const cc2650::gpio::RegisterBlock);
+    pub(super) struct Gpio(*const pac::gpio::RegisterBlock);
     unsafe impl Send for Gpio {}
     unsafe impl Sync for Gpio {}
 
@@ -17,7 +18,7 @@ mod internals {
     pub(super) static GPIO: Gpio = Gpio(GPIO_REGISTER_BLOCK_ADDR as *const _);
 
     impl Deref for Gpio {
-        type Target = cc2650::gpio::RegisterBlock;
+        type Target = pac::gpio::RegisterBlock;
 
         fn deref(&self) -> &Self::Target {
             unsafe { &*self.0 }

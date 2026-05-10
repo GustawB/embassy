@@ -1,5 +1,6 @@
 use crate::gpio::impl_pin;
 use crate::uart::impl_uart;
+pub use cc2650 as pac;
 
 embassy_hal_internal::peripherals! {
     UART0,
@@ -72,3 +73,5 @@ impl_pin!(P_28, 28);
 impl_pin!(P_29, 29);
 impl_pin!(P_30, 30);
 impl_pin!(P_31, 31);
+
+embassy_hal_internal::interrupt_mod!(UART0, UDMA);

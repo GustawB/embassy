@@ -5,7 +5,7 @@
 
 use crate::chip::Peripherals;
 use crate::prcm::Prcm;
-use crate::uart::{UartFull, UartPinConfig};
+use crate::uart::UartPinConfig;
 
 mod ccfg;
 pub mod chip;
@@ -15,8 +15,11 @@ pub mod prcm;
 pub mod uart;
 pub mod udma;
 
+pub use crate::chip::interrupt;
+pub(crate) use chip::pac;
+
 // developer note: this macro can't be in `embassy-hal-internal` due to the use of `$crate`.
-/*#[macro_export]
+#[macro_export]
 macro_rules! bind_interrupts {
     ($(#[$attr:meta])* $vis:vis struct $name:ident {
         $(
@@ -57,13 +60,13 @@ macro_rules! bind_interrupts {
     (@inner $($t:tt)*) => {
         $($t)*
     }
-}*/
+}
 
 pub trait PinConfig: UartPinConfig + Copy {}
 impl<T> PinConfig for T where T: UartPinConfig + Copy {}
 
 pub fn init() -> Peripherals {
-    let peripherals = cc2650::Peripherals::take().unwrap();
+    let peripherals = pac::Peripherals::take().unwrap();
     let prcm = Prcm::new(peripherals.PRCM);
 
     prcm.disable_domains(prcm::PowerDomains::empty().rfc());
