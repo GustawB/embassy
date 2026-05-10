@@ -10,7 +10,7 @@ use critical_section::CriticalSection;
 #[macro_export]
 macro_rules! interrupt_mod {
     ($($irqs:ident),* $(,)?) => {
-        //#[cfg(feature = "rt")]
+        #[cfg(feature = "rt")]
         pub use cortex_m_rt::interrupt;
 
         /// Interrupt definitions.
