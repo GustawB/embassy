@@ -18,7 +18,7 @@ use paste::paste;
 const CLOCK_FREQ: u32 = 48_000_000;
 pub const BAUD_RATE: u32 = 115_200;
 
-define_peri!(Uart, uart0, 1073881088);
+define_peri!(Uart, uart0, 1073745920);
 
 pub trait UartPinConfig {
     fn tx() -> u32;
