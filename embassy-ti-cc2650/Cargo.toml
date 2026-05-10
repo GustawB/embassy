@@ -12,6 +12,7 @@ embassy-sync = { version = "0.8.0", path = "../embassy-sync" }
 critical-section = "1.2"
 cortex-m-rt = ">=0.6.15,<0.8"
 cortex-m = "0.7.6"
+paste = "1.0.15"
 
 [build-dependencies]
 bindgen = { version = "0.72.1" }
@@ -22,6 +23,6 @@ cc = "1.2.60"
 default = ["rt"]
 ## Cortex-M runtime (enabled by default)
 rt = ["cc2650/rt"]
-full_LOCAL_UDMA_table = []
+full_udma_table= []
 defmt = ["cc2650/defmt"]
 ieee = []

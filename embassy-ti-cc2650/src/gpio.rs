@@ -1,31 +1,14 @@
 #![macro_use]
 
 use crate::driverlib;
+use crate::pac;
+use paste::paste;
 use embassy_hal_internal::Peri;
 use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::impl_peripheral;
+use crate::define_peri;
 
-mod internals {
-    use crate::pac;
-    use core::ops::Deref;
-
-    pub(super) struct Gpio(*const pac::gpio::RegisterBlock);
-    unsafe impl Send for Gpio {}
-    unsafe impl Sync for Gpio {}
-
-    // taken straight from cc2650 crate
-    const GPIO_REGISTER_BLOCK_ADDR: usize = 1073881088;
-    pub(super) static GPIO: Gpio = Gpio(GPIO_REGISTER_BLOCK_ADDR as *const _);
-
-    impl Deref for Gpio {
-        type Target = pac::gpio::RegisterBlock;
-
-        fn deref(&self) -> &Self::Target {
-            unsafe { &*self.0 }
-        }
-    }
-}
-use internals::GPIO;
+define_peri!(Gpio, gpio, 1073881088);
 
 /// Pull setting for an input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

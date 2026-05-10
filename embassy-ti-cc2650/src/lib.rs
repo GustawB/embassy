@@ -62,6 +62,35 @@ macro_rules! bind_interrupts {
     }
 }
 
+macro_rules! define_peri {
+    ($name:ident, $cc2650_crate:ident, $addr:expr) => {
+        mod internals {
+            use super::pac;
+            use super::paste;
+            use core::ops::Deref;
+
+            pub(super) struct $name(*const pac::$cc2650_crate::RegisterBlock);
+            unsafe impl Send for $name {}
+            unsafe impl Sync for $name {}
+
+            paste! {
+const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
+                pub(super) static [<$name:upper>]: $name = $name([<$name:upper _REGISTER_BLOCK_ADDR>] as *const _);
+            }
+
+            impl Deref for $name {
+                type Target = pac::$cc2650_crate::RegisterBlock;
+
+                fn deref(&self) -> &Self::Target {
+                    unsafe { &*self.0 }
+                }
+            }
+        }
+        paste! { use internals::[<$name:upper>]; }
+    };
+}
+pub(crate) use define_peri;
+
 pub trait PinConfig: UartPinConfig + Copy {}
 impl<T> PinConfig for T where T: UartPinConfig + Copy {}
 

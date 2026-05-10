@@ -3,6 +3,7 @@
 use core::marker::PhantomData;
 
 use crate::chip::interrupt;
+use crate::define_peri;
 use crate::driverlib;
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac;
@@ -12,30 +13,12 @@ use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use core::task::Poll;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
+use paste::paste;
 
 const CLOCK_FREQ: u32 = 48_000_000;
 pub const BAUD_RATE: u32 = 115_200;
 
-mod internals {
-    use super::pac;
-    use core::ops::Deref;
-
-    pub(super) struct Uart(*const pac::uart0::RegisterBlock);
-    unsafe impl Send for Uart {}
-    unsafe impl Sync for Uart {}
-
-    const UART_REGISTER_BLOCK_ADDR: usize = 1073745920;
-    pub(super) static UART: Uart = Uart(UART_REGISTER_BLOCK_ADDR as *const _);
-
-    impl Deref for Uart {
-        type Target = pac::uart0::RegisterBlock;
-
-        fn deref(&self) -> &Self::Target {
-            unsafe { &*self.0 }
-        }
-    }
-}
-use internals::UART;
+define_peri!(Uart, uart0, 1073881088);
 
 pub trait UartPinConfig {
     fn tx() -> u32;
