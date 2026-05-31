@@ -8,6 +8,7 @@ use crate::driverlib;
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac;
 use crate::udma::UDMA;
+use cc2650::uart0::ifls::{RXSELW, TXSELW};
 use core::future::poll_fn;
 use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
 use core::task::Poll;
@@ -107,6 +108,19 @@ macro_rules! impl_uart {
     };
 }
 
+pub enum Error {
+    /// Buffer was too long.
+    BufferTooLong,
+    /// Buffer overrun
+    Overrun,
+    /// Parity error
+    Parity,
+    /// Framing error
+    Framing,
+    /// Break condition
+    Break,
+}
+
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
     _phantom: PhantomData<T>,
@@ -115,6 +129,48 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         let s = T::state();
+
+        // If an error happened, mask the error interrupts,
+        // BUT don't clear the RSR/ECR; it is up to the poller
+        // (e.g. reader) to check the error status, clear the status
+        // and reenable error interrupts.
+        if UART.ris.read().feris().bit_is_set() // Framing Error
+            || UART.ris.read().peris().bit_is_set() // Parity Error
+            || UART.ris.read().beris().bit_is_set() // Break Error
+            || UART.ris.read().oeris().bit_is_set()
+        // Overrun Error
+        {
+            UART.imsc.modify(|_r, w| {
+                w.oeim()
+                    .clear_bit() // Mask Overrun Error
+                    .beim()
+                    .clear_bit() // Mask Break Error
+                    .peim()
+                    .clear_bit() // Mask Parity Error
+                    .feim()
+                    .clear_bit() // Mask Framing Error
+            });
+        }
+
+        // clear interrupt flags
+        UART.icr.write(|w| {
+            w.beic() // break error
+                .set_bit()
+                // .ctsmic()            // Clear-To-Send ...
+                // .set_bit()
+                .feic() // framing error
+                .set_bit()
+                .oeic() // buffer overrun error
+                .set_bit()
+                .peic() // parity error
+                .set_bit()
+                .rtic() // reception timeout
+                .set_bit()
+                .rxic() // receive
+                .set_bit()
+                .txic() // transmit
+                .set_bit()
+        });
 
         if UDMA.uart_request_done_tx() {
             UDMA.uart_request_done_tx_clear();
@@ -130,33 +186,34 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             s.rx_dma_finished.store(true, Ordering::SeqCst);
             s.rx_waker.wake();
         }
-
-        // clear interrupt flags
-        UART.icr.write(|w| {
-            w
-                // .beic()              // break error
-                // .set_bit()
-                // .ctsmic()            // Clear-To-Send ...
-                // .set_bit()
-                // .feic()              // framing error
-                // .set_bit()
-                // .oeic()              // buffer overrun error
-                // .set_bit()
-                // .peic()              // parity error
-                // .set_bit()
-                .rtic() // reception timeout
-                .set_bit()
-                .rxic() // receive
-                .set_bit()
-                .txic() // transmit
-                .set_bit()
-        });
     }
 }
 
-pub enum Error {
-    /// Buffer was too long.
-    BufferTooLong,
+pub enum FIFOFillLevel {
+    /// Transmit/Receive FIFO becomes >= 1/8 full
+    Level18,
+    /// Transmit/Receive FIFO becomes >= 2/8 full
+    Level28,
+    /// Transmit/Receive FIFO becomes >= 4/8 full
+    Level48,
+    /// Transmit/Receive FIFO becomes >= 6/8 full
+    Level68,
+    /// Transmit/Receive FIFO becomes >= 7/8 full
+    Level78,
+}
+
+fn check_errors() -> Result<(), Error> {
+    if UART.rsr.read().fe().bit_is_set() {
+        Err(Error::Framing)
+    } else if UART.rsr.read().pe().bit_is_set() {
+        Err(Error::Parity)
+    } else if UART.rsr.read().be().bit_is_set() {
+        Err(Error::Break)
+    } else if UART.rsr.read().oe().bit_is_set() {
+        Err(Error::Overrun)
+    } else {
+        Ok(())
+    }
 }
 
 pub struct UartFullRx {
@@ -164,7 +221,14 @@ pub struct UartFullRx {
 }
 
 impl UartFullRx {
-    pub fn enable_rx_interrupts(&self) {
+    pub fn enable_rx_interrupts(&self, fill_level: FIFOFillLevel) {
+        match fill_level {
+            FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_1_8)),
+            FIFOFillLevel::Level28 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_2_8)),
+            FIFOFillLevel::Level48 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_4_8)),
+            FIFOFillLevel::Level68 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_6_8)),
+            FIFOFillLevel::Level78 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_7_8)),
+        };
         // Set interrupts:
         // - receive interrupt
         // - reception timeout interrupt
@@ -178,8 +242,12 @@ impl UartFullRx {
         UART.imsc.modify(|_r, w| w.rxim().clear_bit().rtim().clear_bit())
     }
 
-    fn rx_ready(&self) -> bool {
-        UART.fr.read().rxff().bit_is_clear()
+    fn rx_fifo_full(&self) -> bool {
+        UART.fr.read().rxff().bit_is_set()
+    }
+
+    fn rx_fifo_empty(&self) -> bool {
+        UART.fr.read().rxff().bit_is_set()
     }
 
     fn dma_start_rx(&self) {
@@ -197,19 +265,46 @@ impl UartFullRx {
 
         self.dma_start_rx();
 
-        poll_fn(|cx| {
+        let result = poll_fn(|cx| {
             self.state.rx_waker.register(cx.waker());
-            if self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
-                return Poll::Ready(());
+            if let Err(e) = check_errors() {
+                UDMA.uart_disable_rx();
+                return Poll::Ready(Err(e));
+            } else if self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+                return Poll::Ready(Ok(()));
             }
             Poll::Pending
         })
         .await;
 
+        //compiler_fence(Ordering::SeqCst);
+
+        //UDMA.uart_request_done_rx_clear();
+
+        result
+    }
+
+    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
+        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
+            return Err(Error::BufferTooLong);
+        }
+
+        UDMA.uart_transfer_rx(&mut buffer[..tx_len]);
+
         compiler_fence(Ordering::SeqCst);
 
-        UDMA.uart_request_done_rx_clear();
+        self.dma_start_rx();
 
+        while !self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+            if let Err(e) = check_errors() {
+                UDMA.uart_disable_rx();
+                return Err(e);
+            }
+        }
+
+        //compiler_fence(Ordering::SeqCst);
+
+        //UDMA.uart_request_done_rx_clear();
         Ok(())
     }
 }
@@ -219,7 +314,15 @@ pub struct UartFullTx {
 }
 
 impl UartFullTx {
-    pub fn enable_tx_interrupts(&self) {
+    pub fn enable_tx_interrupts(&self, fill_level: FIFOFillLevel) {
+        match fill_level {
+            FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_1_8)),
+            FIFOFillLevel::Level28 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_2_8)),
+            FIFOFillLevel::Level48 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_4_8)),
+            FIFOFillLevel::Level68 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_6_8)),
+            FIFOFillLevel::Level78 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_7_8)),
+        };
+
         // Set interrupts:
         // - transmit interrupt
         UART.imsc.modify(|_r, w| w.txim().set_bit())
@@ -244,26 +347,51 @@ impl UartFullTx {
     }
 
     pub async fn write(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
-        /*if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
+        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
-        }*/
+        }
 
         UDMA.uart_transfer_tx(&buffer[..tx_len]);
 
         self.dma_start_tx();
 
-        poll_fn(|cx| {
-            self.state.tx_waker.register(cx.waker());
-            if self.state.tx_dma_finished.swap(false, Ordering::SeqCst) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
+        let result = poll_fn(|cx| {
+            self.state.rx_waker.register(cx.waker());
+            if let Err(e) = check_errors() {
+                UDMA.uart_disable_tx();
+                return Poll::Ready(Err(e));
+            } else if self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+                return Poll::Ready(Ok(()));
             }
+            Poll::Pending
         })
         .await;
 
-        UDMA.uart_request_done_tx_clear();
+        //        UDMA.uart_request_done_tx_clear();
+        result
+    }
 
+    pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
+        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
+            return Err(Error::BufferTooLong);
+        }
+
+        UDMA.uart_transfer_tx(&buffer[..tx_len]);
+
+        compiler_fence(Ordering::SeqCst);
+
+        self.dma_start_tx();
+
+        while !self.state.tx_dma_finished.swap(false, Ordering::SeqCst) {
+            if let Err(e) = check_errors() {
+                UDMA.uart_disable_tx();
+                return Err(e);
+            }
+        }
+
+        //compiler_fence(Ordering::SeqCst);
+
+        //UDMA.uart_request_done_tx_clear();
         Ok(())
     }
 }
@@ -395,7 +523,7 @@ impl<'a> UartFull<'a> {
         UART.ctl.modify(|_r, w| w.ctsen().bit(on).rtsen().bit(on));
     }
 
-    /// The idea is that this is run each time MCU stops deep sleep.
+    /// The idea is that this is run each time System CPU stops deep sleep.
     fn enable(&self) {
         // Disable, because they should be enabled only upon a transfer/receive request.
         UDMA.uart_disable_tx();
@@ -419,13 +547,13 @@ impl<'a> UartFull<'a> {
     }
 
     #[allow(unused)]
-    pub fn enable_rx_interrupts(&self) {
-        self.rx.enable_rx_interrupts();
+    pub fn enable_rx_interrupts(&self, fill_level: FIFOFillLevel) {
+        self.rx.enable_rx_interrupts(fill_level);
     }
 
     #[allow(unused)]
-    pub fn enable_tx_interrupts(&self) {
-        self.tx.enable_tx_interrupts();
+    pub fn enable_tx_interrupts(&self, fill_level: FIFOFillLevel) {
+        self.tx.enable_tx_interrupts(fill_level);
     }
 
     #[allow(unused)]
@@ -438,20 +566,8 @@ impl<'a> UartFull<'a> {
         self.tx.disable_tx_interrupts();
     }
 
-    /// Transmit one byte at the time
-    pub unsafe fn send_byte(&self, byte: u8) {
-        UART.dr.write(|w| unsafe { w.data().bits(byte) })
-    }
-
     #[allow(unused)]
-    // Pulls a byte out of the RX FIFO.
-    #[inline]
-    unsafe fn read_byte(&self) -> u8 {
-        UART.dr.read().data().bits()
-    }
-
-    #[allow(unused)]
-    /// Check if the UART transmission is done
+    /// Check if the TX FIFO is empty
     fn tx_fifo_empty(&self) -> bool {
         self.tx.tx_fifo_empty()
     }
@@ -463,17 +579,31 @@ impl<'a> UartFull<'a> {
     }
 
     #[allow(unused)]
-    /// Check if either the rx_buffer is full or the UART has timed out
-    fn rx_ready(&self) -> bool {
-        self.rx.rx_ready()
+    /// Check if RX FIFO is empty
+    fn rx_fifo_empty(&self) -> bool {
+        self.rx.rx_fifo_empty()
+    }
+
+    #[allow(unused)]
+    /// Check if RX FIFO is full
+    fn rx_fifo_full(&self) -> bool {
+        self.rx.rx_fifo_full()
     }
 
     pub async fn read(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
         self.rx.read(buffer, tx_len).await
     }
 
+    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
+        self.rx.read_blocking(buffer, tx_len)
+    }
+
     pub async fn write(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
         self.tx.write(buffer, tx_len).await
+    }
+
+    pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
+        self.tx.write_blocking(buffer, tx_len)
     }
 }
 
