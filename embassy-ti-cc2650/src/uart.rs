@@ -18,6 +18,9 @@ use paste::paste;
 const CLOCK_FREQ: u32 = 48_000_000;
 pub const BAUD_RATE: u32 = 115_200;
 
+// 1073745920 is the start address of registers for UART0.
+// cc2650 crate calls it RegisterBlock; I took this
+// addres from said crate.
 define_peri!(Uart, uart0, 1073745920);
 
 pub trait UartPinConfig {

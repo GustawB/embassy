@@ -47,7 +47,6 @@ macro_rules! bind_interrupts {
                     )*
                 }
             }
-
             $(#[cfg($cond_irq)])?
             $crate::bind_interrupts!(@inner
                 $(

@@ -12,11 +12,14 @@
 
 use core::{ffi::c_void, marker::PhantomData, ptr::addr_of};
 
+use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
 use paste::paste;
-use crate::define_peri;
 
+// 1073872896 is the start address of registers for UDMA0.
+// cc2650 crate calls it RegisterBlock; I took this
+// addres from said crate.
 define_peri!(IUdma, udma0, 1073872896);
 
 macro_rules! static_mut_ref {
@@ -270,9 +273,7 @@ impl<const INDEX: u32> ChannelControlEntry<Primary, INDEX> {
     }
 
     fn disable(&self) {
-       IUDMA 
-            .clearchannelen
-            .write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+        IUDMA.clearchannelen.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
     }
 
     fn is_enabled(&self) -> bool {

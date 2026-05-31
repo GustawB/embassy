@@ -1,13 +1,16 @@
 #![macro_use]
 
+use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
-use paste::paste;
 use embassy_hal_internal::Peri;
 use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::impl_peripheral;
-use crate::define_peri;
+use paste::paste;
 
+// 1073881088 is the start address of registers for GPIO.
+// cc2650 crate calls it RegisterBlock; I took this
+// addres from said crate.
 define_peri!(Gpio, gpio, 1073881088);
 
 /// Pull setting for an input.
@@ -37,7 +40,7 @@ impl<'d> Input<'d> {
     /// Create GPIO input driver for a [Pin] with the provided [Pull] configuration.
     #[inline]
     pub fn new(pin: Peri<'d, impl Pin>, pull: Pull) -> Self {
-        let gpio_pin = GPIOPin::new(pin);
+        let mut gpio_pin = GPIOPin::new(pin);
         gpio_pin.make_input(pull);
         Self { gpio_pin }
     }
@@ -61,7 +64,7 @@ pub struct Output<'d> {
 
 impl<'d> Output<'d> {
     pub fn new(pin: Peri<'d, impl Pin>, initial_output: Level) -> Self {
-        let gpio_pin = GPIOPin::new(pin);
+        let mut gpio_pin = GPIOPin::new(pin);
         gpio_pin.make_output();
         match initial_output {
             Level::Low => gpio_pin.set_low(),
@@ -80,12 +83,6 @@ impl<'d> Output<'d> {
     #[inline]
     pub fn set_low(&mut self) {
         self.gpio_pin.set_low()
-    }
-
-    /// Toggle the output level.
-    #[inline]
-    pub fn toggle(&mut self) {
-        self.gpio_pin.toggle()
     }
 
     /// Get whether the output level is set to high.
@@ -125,13 +122,13 @@ impl<'d> GPIOPin<'d> {
         Self { pin: any_pin, pin_mask }
     }
 
-    fn make_input(&self, mode: Pull) {
+    fn make_input(&mut self, mode: Pull) {
         self.enable_gpio();
         self.enable_input();
         self.set_floating_state(mode);
     }
 
-    fn make_output(&self) {
+    fn make_output(&mut self) {
         self.enable_gpio();
         self.enable_output();
     }
@@ -142,10 +139,6 @@ impl<'d> GPIOPin<'d> {
 
     fn set_low(&self) {
         GPIO.doutclr31_0.write(|w| unsafe { w.bits(self.pin_mask) });
-    }
-
-    fn toggle(&self) {
-        GPIO.douttgl31_0.modify(|_r, w| unsafe { w.bits(self.pin_mask) });
     }
 
     fn is_set_high(&self) -> bool {
@@ -180,9 +173,9 @@ impl<'d> GPIOPin<'d> {
     fn enable_input(&self) {
         // Driverlib is better here: cc2650 crate requires either matching over 32 options or a lot of unsafe.
         // OTOH both IOCPortConfigure{G,S}et are present in ROM.
-        let mut pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin.pin()) };
-        pin_config |= driverlib::IOC_INPUT_ENABLE;
-        unsafe { driverlib::IOCPortConfigureSet(self.pin.pin(), driverlib::IOC_PORT_GPIO, pin_config) };
+        unsafe {
+            driverlib::IOCIOInputSet(self.pin.pin(), driverlib::IOC_PORT_GPIO);
+        };
     }
 
     fn set_floating_state(&self, mode: Pull) {
