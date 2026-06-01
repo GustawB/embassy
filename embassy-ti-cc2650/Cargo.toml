@@ -7,7 +7,7 @@ links = "driverlib"
 [dependencies]
 cc2650 = { version = "0.1.1" }
 cty = "0.2.2"
-embassy-hal-internal = { version = "0.5.0", path = "../embassy-hal-internal", features = ["cortex-m", "prio-bits-3"] } # table 2-96 TI-TRM. Each irq gest 8bits for priority so I guess that's it?
+embassy-hal-internal = { version = "0.5.0", path = "../embassy-hal-internal", features = ["cortex-m", "prio-bits-3"] }
 embassy-sync = { version = "0.8.0", path = "../embassy-sync" }
 critical-section = "1.2"
 cortex-m-rt = ">=0.6.15,<0.8"
