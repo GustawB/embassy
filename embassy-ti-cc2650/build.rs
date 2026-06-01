@@ -2,7 +2,7 @@
 
 use std::env;
 use std::ffi::OsStr;
-use std::fs::File;
+use std::fs::{File, read_to_string, write};
 use std::io::Write;
 use std::iter::FromIterator;
 use std::path::Path;
@@ -136,8 +136,8 @@ impl DriverlibBuilder {
 
         driverlib_headers.sort_unstable();
 
-        // Fix for sw_poly1305-donna-32.h (C is retarded and it requires sw_poly1305-donna.h included
-        // before sw_poly1305-donna-32.h, even though the latter comes first in the alphanumeric order):
+        // sw_poly1305-donna-32.h needs to be included before sw_poly1305-donna-32.h,
+        // even though the latter comes first in the alphanumeric order.
         let sw_poly1305_donna_32_h_idx = driverlib_headers
             .iter()
             .enumerate()
@@ -210,8 +210,7 @@ impl DriverlibBuilder {
     }
 
     fn compile_static_inline_extern_fns(&self) {
-        // Compile extern.c containing (formerly) static inline functions
-        let extern_bc_path = cc::Build::new()
+        let extern_o_path = cc::Build::new()
             .compiler("clang")
             .file(&self.extern_c_path)
             .warnings(false)
@@ -219,27 +218,15 @@ impl DriverlibBuilder {
             .include(self.newlib_inc_path.as_str())
             .include(&self.driverlib_includes)
             .include(".")
-            .flag("-flto=thin")
-            .cargo_metadata(false) // We want to first merge everything into one big library, only then link.
+            .flag("-ffunction-sections")
+            .flag("-fdata-sections")
+            .cargo_metadata(false)
             .compile_intermediates()
             .into_iter()
             .next()
             .unwrap();
 
-        // llc --filetype obj blahblah-extern.o -o extern.o
-        let status = Command::new("llc")
-            .arg("--filetype")
-            .arg("obj")
-            .arg("--function-sections")
-            .arg("--data-sections")
-            .arg(&extern_bc_path)
-            .arg("-o")
-            .arg(&self.extern_o_path)
-            .spawn()
-            .unwrap()
-            .wait()
-            .unwrap();
-        assert!(status.success(), "extern.o llc failed");
+        std::fs::copy(&extern_o_path, &self.extern_o_path).expect("Failed to copy extern.o");
     }
 
     fn merge_lib(&self) {
@@ -305,18 +292,20 @@ impl DriverlibBuilder {
 
         // Writes ROM symbols enabled in rom.h to a file with the given name.
         fn get_enabled_rom_fns(sources: &Path, enabled_rom_fns: &Path) {
-            let rom_h = "rom.h";
-            let status = Command::new("bash")
-                .arg("-c")
-                .arg("-f")
-                .arg(format!(
-                    r#"sed -E -n -e '/^#define ROM_/s/^#define ROM_(.*) \\/\1/p' {} > {}"#,
-                    sources.join(rom_h).to_str().unwrap(),
-                    enabled_rom_fns.to_str().unwrap(),
-                ))
-                .status()
-                .unwrap();
-            assert!(status.success(), "getting enabled ROM fns failed")
+            let rom_h_path = sources.join("rom.h");
+            let content = read_to_string(&rom_h_path).expect("Failed to read rom.h");
+
+            let parsed_data: String = content
+                .lines()
+                .filter_map(|line| {
+                    line.strip_prefix("#define ROM_")
+                        .map(|rest| rest.trim_end_matches([' ', '\\']))
+                })
+                .collect::<Vec<_>>()
+                .join("\n")
+                + "\n";
+
+            write(enabled_rom_fns, parsed_data).expect("Failed to write to output file");
         }
     }
 
