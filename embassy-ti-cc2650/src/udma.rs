@@ -17,7 +17,10 @@ use crate::driverlib;
 use crate::pac;
 use paste::paste;
 
-// 1073872896 is the start address of registers for UDMA0.
+const UART0_RX_CHANNEL: u32 = 1;
+const UART0_TX_CHANNEL: u32 = 2;
+
+// 1073872896 is the start address of registers for UART0.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
 define_peri!(IUdma, udma0, 1073872896);
@@ -38,8 +41,9 @@ impl Udma {
         // Set the pointer to the channel control map.
         let map_addr = addr_of!(CHANNEL_CONTROL_MAP) as u32;
 
-        // `w.baseptr()` is BUGGED!!! Don't use it!
-        // It performs shift left 10 bits on your argument!
+        // `w.baseptr()` performs shift left 10 bits on your argument,
+        // probably because 10 least significant bits on CTRL register
+        // are reserved.
         IUDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
 
         IUDMA.cfg.write(|w| w.masterenable().set_bit());
@@ -58,7 +62,7 @@ impl Udma {
     #[allow(unused)]
     pub(crate) fn uart_disable_tx(&self) {
         unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.disable(); // TX
+            driverlib::uDMAChannelDisable(driverlib::UDMA0_BASE, UART0_TX_CHANNEL);
         }
     }
 
@@ -66,36 +70,30 @@ impl Udma {
     #[allow(unused)]
     pub(crate) fn uart_disable_rx(&self) {
         unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.disable(); // RX
+            driverlib::uDMAChannelDisable(driverlib::UDMA0_BASE, UART0_RX_CHANNEL);
         }
     }
 
     #[inline]
     pub(crate) fn uart_channels_configure(&self) {
-        let data_size = DataSize::Size8;
-        let arbitration_size = ArbitrationSize::Arb32;
-
-        let control_rx = ControlWord {
-            data_size,
-            src_addr_inc: SrcAddrIncrement::IncNone, // We are reading from UART:DR all the time
-            dst_addr_inc: DstAddrIncrement::Inc8,    // We are reading bytes
-            arbitration_size,
-        };
-        let control_tx = ControlWord {
-            data_size,
-            src_addr_inc: SrcAddrIncrement::Inc8,    // We are writing bytes
-            dst_addr_inc: DstAddrIncrement::IncNone, // We are writing to UART:DR all the time
-            arbitration_size,
-        };
-
+        let channel_struct_index_rx = driverlib::UDMA_PRI_SELECT | UART0_RX_CHANNEL;
+        // On receive, uDMA repeatedly reads 8 bytes from DR (no incr) and writes it to the
+        // destination (increment).
+        let channel_control_rx =
+            driverlib::UDMA_SIZE_8 | driverlib::UDMA_SRC_INC_NONE | driverlib::UDMA_DST_INC_8 | driverlib::UDMA_ARB_32;
         unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_1 // RX
-                .set_control(control_rx);
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_2 // TX
-                .set_control(control_tx);
-        }
+            driverlib::uDMAChannelControlSet(driverlib::UDMA0_BASE, channel_struct_index_rx, channel_control_rx);
+        };
+
+        let channel_struct_index_tx = driverlib::UDMA_PRI_SELECT | UART0_TX_CHANNEL;
+
+        // On send, uDMA repeatedly writes 8 bytes from source (increment) and writes it to the
+        // DR (no incr).
+        let channel_control_tx =
+            driverlib::UDMA_SIZE_8 | driverlib::UDMA_SRC_INC_8 | driverlib::UDMA_DST_INC_NONE | driverlib::UDMA_ARB_32;
+        unsafe {
+            driverlib::uDMAChannelControlSet(driverlib::UDMA0_BASE, channel_struct_index_tx, channel_control_tx);
+        };
     }
 
     #[inline]
@@ -106,7 +104,7 @@ impl Udma {
                 mem.as_mut_ptr() as *mut (),
                 mem.len() as u32,
             );
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.enable();
+            driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_RX_CHANNEL);
         }
     }
 
@@ -118,30 +116,30 @@ impl Udma {
                 &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
                 mem.len() as u32,
             );
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.enable();
+            driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_TX_CHANNEL);
         }
     }
 
     #[inline]
     #[allow(unused)]
     pub(crate) fn uart_is_enabled_rx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.is_enabled() }
+        unsafe { driverlib::uDMAChannelIsEnabled(driverlib::UDMA0_BASE, UART0_RX_CHANNEL) }
     }
 
     #[inline]
     #[allow(unused)]
     pub(crate) fn uart_is_enabled_tx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.is_enabled() }
+        unsafe { driverlib::uDMAChannelIsEnabled(driverlib::UDMA0_BASE, UART0_TX_CHANNEL) }
     }
 
     #[inline]
     pub(crate) fn uart_request_done_rx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.request_done() }
+        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.is_request_done() }
     }
 
     #[inline]
     pub(crate) fn uart_request_done_tx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.request_done() }
+        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.is_request_done() }
     }
 
     #[inline]
@@ -242,7 +240,6 @@ pub mod control_word {
     }
 }
 pub use control_word::ControlWord;
-use control_word::{ArbitrationSize, DataSize, DstAddrIncrement, SrcAddrIncrement};
 
 #[repr(C, align(16))]
 struct ChannelControlEntry<KIND: ChannelControlEntryKind, const INDEX: u32> {
@@ -255,37 +252,12 @@ struct ChannelControlEntry<KIND: ChannelControlEntryKind, const INDEX: u32> {
 }
 
 impl<const INDEX: u32> ChannelControlEntry<Primary, INDEX> {
-    fn enable(&self) {
-        // We do not use any of these; TRM suggests clearing them explicitly,
-        // but at the same time says it's not needed.
-        // unsafe {
-        //     driverlib::uDMAChannelAttributeDisable(
-        //         driverlib::UDMA0_BASE,
-        //         INDEX,
-        //         driverlib::UDMA_ATTR_USEBURST
-        //             | driverlib::UDMA_ATTR_ALTSELECT
-        //             | driverlib::UDMA_ATTR_HIGH_PRIORITY
-        //             | driverlib::UDMA_ATTR_REQMASK,
-        //     )
-        // };
-
-        IUDMA.setchannelen.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
-    }
-
-    fn disable(&self) {
-        IUDMA.clearchannelen.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
-    }
-
-    fn is_enabled(&self) -> bool {
-        IUDMA.setchannelen.read().chnls().bits() & (1 << INDEX) != 0
-    }
-
     #[allow(unused)]
     fn software_request(&self) {
         IUDMA.softreq.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
     }
 
-    fn request_done(&self) -> bool {
+    fn is_request_done(&self) -> bool {
         IUDMA.reqdone.read().chnls().bits() & (1 << INDEX) != 0
     }
 
@@ -303,10 +275,6 @@ impl<KIND: ChannelControlEntryKind, const INDEX: u32> ChannelControlEntry<KIND, 
             _unused: 0,
             _phantom: PhantomData,
         }
-    }
-
-    fn set_control(&self, control: ControlWord) {
-        unsafe { driverlib::uDMAChannelControlSet(driverlib::UDMA0_BASE, INDEX, control.as_u32()) }
     }
 
     fn set_transfer(&self, src: *mut (), dest: *mut (), len: u32) {
