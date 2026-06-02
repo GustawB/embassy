@@ -1,10 +1,9 @@
 //! The build script also sets the linker flags to tell it which link script to use.
 
+use bindgen::callbacks::ItemInfo;
 use std::env;
-use std::ffi::OsStr;
 use std::fs::{File, read_to_string, write};
 use std::io::Write;
-use std::iter::FromIterator;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
@@ -18,7 +17,7 @@ const LIB_ROM_ORIGINAL: &str = "rom/driverlib.elf";
 const LIB_ROM_FILTERED: &str = "libROM_driverlib_filtered.elf";
 
 const LIB_NOROM_ORIGINAL: &str = "driverlib/bin/gcc/driverlib.lib";
-const LIB_NOROM_NOPREFIX: &str = "libdriverlib.a";
+const LIB_NOROM_FINAL: &str = "libdriverlib.a";
 
 const DRIVERLIB_SOURCES: &str = "driverlib";
 const DRIVERLIB_INCLUDES: &str = "inc";
@@ -28,6 +27,19 @@ const EXTERN_C_NAME: &str = "extern.c";
 const EXTERN_O_NAME: &str = "extern.o";
 
 const ENABLED_ROM_FNS_TXT: &str = "enabled_rom_fns.txt";
+
+#[derive(Debug)]
+struct NoromStripper;
+
+// Since we decided to not use -DDOXYGEN, many sombols from
+// driverlib have NOROM_ prefix. This callback ensures, that
+// the rust binding still links to the symbol with NOROM_ prefix
+// but rust function itself does not contain the prefix.
+impl bindgen::callbacks::ParseCallbacks for NoromStripper {
+    fn item_name(&self, original_item_name: ItemInfo<'_>) -> Option<String> {
+        original_item_name.name.strip_prefix("NOROM_").map(|s| s.to_string())
+    }
+}
 
 fn main() {
     let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
@@ -41,7 +53,6 @@ struct DriverlibBuilder {
     driverlib_sources: PathBuf,
     driverlib_includes: PathBuf,
     lib_norom_original_path: PathBuf,
-    lib_norom_noprefix_path: PathBuf,
     lib_rom_original_path: PathBuf,
     lib_rom_filtered_path: PathBuf,
     extern_c_path: PathBuf,
@@ -60,7 +71,6 @@ impl DriverlibBuilder {
         let cc2650_crate_driverlib_includes = cc2650_crate_driverlib_root.join(DRIVERLIB_INCLUDES);
 
         let lib_norom_original_path = cc2650_crate_driverlib_root.join(LIB_NOROM_ORIGINAL);
-        let lib_norom_noprefix_path = out.join(LIB_NOROM_NOPREFIX);
         let lib_rom_original_path = cc2650_crate_driverlib_root.join(LIB_ROM_ORIGINAL);
         let lib_rom_filtered_path = out.join(LIB_ROM_FILTERED);
         let extern_c_path = out.join(EXTERN_C_NAME);
@@ -72,7 +82,6 @@ impl DriverlibBuilder {
             newlib_inc_path,
             driverlib_sources: cc2650_crate_driverlib_sources,
             driverlib_includes: cc2650_crate_driverlib_includes,
-            lib_norom_noprefix_path,
             lib_norom_original_path,
             lib_rom_original_path,
             lib_rom_filtered_path,
@@ -99,7 +108,7 @@ impl DriverlibBuilder {
         self.strip_disabled_rom_fns();
 
         // Remove "NOROM_" prefix from symbols in libdriverlib.a.
-        self.unprefix_norom_symbols();
+        //self.unprefix_norom_symbols();
 
         // Remove from libdriverlib.a symbols that are to be called from ROM,
         // in order to prevent multiple definitions linking errors.
@@ -184,7 +193,7 @@ impl DriverlibBuilder {
             // Don't look for standard C types in ::std; instead, use cty crate.
             .ctypes_prefix("cty")
             // Required to get reasonable function signatures in driverlib headers.
-            .clang_arg("-DDOXYGEN")
+            .clang_arg("-D__GNUC__")
             // Required in rust-analyzer to succeed in building.
             .clang_arg("-D__GLIBC_USE(...)")
             // Add driverlib headers. E.g. "inc/hw_types.h" is required.
@@ -199,8 +208,8 @@ impl DriverlibBuilder {
             .derive_default(true)
             // So that RFC CMDs are not forgot to be actually run.
             .must_use_type(".*rfc_CMD.*")
-            // Tell cargo to invalidate the built crate whenever any of the included header files changed.
-            .parse_callbacks(Box::new(bindgen::CargoCallbacks::new()))
+            // Strip NOROM from the names of the rust bindings.
+            .parse_callbacks(Box::new(NoromStripper))
             // Finish the builder and generate the bindings.
             .generate()
             // Unwrap the Result and panic on failure.
@@ -214,7 +223,7 @@ impl DriverlibBuilder {
             .compiler("clang")
             .file(&self.extern_c_path)
             .warnings(false)
-            .define("DOXYGEN", None)
+            .define("__GNUC__", None)
             .include(self.newlib_inc_path.as_str())
             .include(&self.driverlib_includes)
             .include(".")
@@ -267,12 +276,16 @@ impl DriverlibBuilder {
         let status = Command::new("ar")
             .arg("rb")
             .arg("adi.o")
-            .arg(&self.lib_norom_noprefix_path)
+            .arg(&self.lib_norom_original_path)
             .arg(&rom_symbols_o_path)
             .arg(&self.extern_o_path)
             .status()
             .unwrap();
         assert!(status.success(), "merge driverlib ar failed");
+
+        // Copy lib to the path expected by the linker.
+        std::fs::copy(&self.lib_norom_original_path, self.out.join(LIB_NOROM_FINAL))
+            .expect("Falied to copy library to th efinal location.");
     }
 
     // Strips those functions from ROM symbols ELF, which are disabled in rom.h.
@@ -326,66 +339,10 @@ impl DriverlibBuilder {
             let status = Command::new("arm-none-eabi-objcopy")
                 .arg("--strip-symbol")
                 .arg(symbol)
-                .arg(&self.lib_norom_noprefix_path)
+                .arg(&self.lib_norom_original_path)
                 .status()
                 .unwrap();
             assert_eq!(status.code(), Some(0));
-        }
-    }
-
-    fn unprefix_norom_symbols(&self) {
-        let symbols = get_norom_symbols(&self.lib_norom_original_path);
-
-        rename_symbols(
-            &self.out,
-            &symbols,
-            &self.lib_norom_original_path,
-            &self.lib_norom_noprefix_path,
-        );
-
-        // Returns all symbols contained in a given ELF.
-        // Intended for NOROM symbols stored in libdriverlib.a.
-        fn get_norom_symbols(lib_norom_original_path: &PathBuf) -> Vec<u8> {
-            Command::new("nm")
-                .arg("-f")
-                .arg("just-symbols")
-                .arg(lib_norom_original_path)
-                .output()
-                .unwrap()
-                .stdout
-        }
-
-        // Creates a new ELF in `target` path that builds upon the ELF from `source` path
-        // with NOROM_* symbols having their prefix deleted.
-        // `symbols` are already fetched symbols from `source` ELF,
-        // `out` is used as a location for text file with the remapping.
-        fn rename_symbols(out: &Path, symbols: &[u8], source: impl AsRef<OsStr>, target: impl AsRef<OsStr>) {
-            let norom_symbols_remapping = out.join("norom_symbols_remapping.txt");
-            let mut symbols = Vec::from_iter(symbols.split(|&c| c == b'\n'));
-            symbols.retain(|sym| sym.starts_with(b"NOROM"));
-            symbols.sort_unstable();
-            symbols.dedup();
-
-            let mut buf = Vec::new();
-            for sym in symbols.into_iter() {
-                buf.extend_from_slice(sym);
-                buf.push(b' ');
-                buf.extend_from_slice(sym.strip_prefix(b"NOROM_").unwrap());
-                buf.push(b'\n');
-            }
-            File::create(&norom_symbols_remapping).unwrap().write_all(&buf).unwrap();
-
-            // arm-none-eabi-objcopy --redefine-syms norom_symbols_remapping.txt driverlib/libdriverlib.a out/libdriverlib.a
-            let status = Command::new("arm-none-eabi-objcopy")
-                .arg("--redefine-syms")
-                .arg(norom_symbols_remapping)
-                .arg(source)
-                .arg(target)
-                .spawn()
-                .unwrap()
-                .wait()
-                .unwrap();
-            assert!(status.success(), "objcopy redefine-syms failed")
         }
     }
 

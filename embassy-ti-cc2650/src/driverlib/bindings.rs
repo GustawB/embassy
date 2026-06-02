@@ -154,6 +154,72 @@ pub const __POSIX_VISIBLE: u32 = 200809;
 pub const __SVID_VISIBLE: u32 = 1;
 pub const __XSI_VISIBLE: u32 = 0;
 pub const __SSP_FORTIFY_LEVEL: u32 = 0;
+pub const _LIBC_LIMITS_H_: u32 = 1;
+pub const __NEWLIB_H__: u32 = 1;
+pub const _ATEXIT_DYNAMIC_ALLOC: u32 = 1;
+pub const _FSEEK_OPTIMIZATION: u32 = 1;
+pub const _FVWRITE_IN_STREAMIO: u32 = 1;
+pub const _HAVE_CC_INHIBIT_LOOP_TO_LIBCALL: u32 = 1;
+pub const _HAVE_INITFINI_ARRAY: u32 = 1;
+pub const _HAVE_LONG_DOUBLE: u32 = 1;
+pub const _LDBL_EQ_DBL: u32 = 1;
+pub const _MB_LEN_MAX: u32 = 1;
+pub const _REENT_CHECK_VERIFY: u32 = 1;
+pub const _UNBUF_STREAM_OPT: u32 = 1;
+pub const _WANT_IO_LONG_LONG: u32 = 1;
+pub const _WANT_REGISTER_FINI: u32 = 1;
+pub const _WANT_USE_GDTOA: u32 = 1;
+pub const _WIDE_ORIENT: u32 = 1;
+pub const __GNUCLIKE_ASM: u32 = 2;
+pub const __GNUCLIKE___TYPEOF: u32 = 1;
+pub const __GNUCLIKE___SECTION: u32 = 1;
+pub const __GNUCLIKE_CTOR_SECTION_HANDLING: u32 = 1;
+pub const __GNUCLIKE_BUILTIN_CONSTANT_P: u32 = 1;
+pub const __GNUC_VA_LIST_COMPATIBILITY: u32 = 1;
+pub const __GNUCLIKE_BUILTIN_NEXT_ARG: u32 = 1;
+pub const __GNUCLIKE_BUILTIN_MEMCPY: u32 = 1;
+pub const __CC_SUPPORTS_INLINE: u32 = 1;
+pub const __CC_SUPPORTS___INLINE: u32 = 1;
+pub const __CC_SUPPORTS___INLINE__: u32 = 1;
+pub const __CC_SUPPORTS___FUNC__: u32 = 1;
+pub const __CC_SUPPORTS_WARNING: u32 = 1;
+pub const __CC_SUPPORTS_VARADIC_XXX: u32 = 1;
+pub const __CC_SUPPORTS_DYNAMIC_ARRAY_INIT: u32 = 1;
+pub const ARG_MAX: u32 = 65536;
+pub const CHILD_MAX: u32 = 40;
+pub const LINK_MAX: u32 = 32767;
+pub const MAX_CANON: u32 = 255;
+pub const MAX_INPUT: u32 = 255;
+pub const NAME_MAX: u32 = 255;
+pub const NGROUPS_MAX: u32 = 16;
+pub const OPEN_MAX: u32 = 64;
+pub const PATH_MAX: u32 = 1024;
+pub const PIPE_BUF: u32 = 512;
+pub const IOV_MAX: u32 = 1024;
+pub const BC_BASE_MAX: u32 = 99;
+pub const BC_DIM_MAX: u32 = 2048;
+pub const BC_SCALE_MAX: u32 = 99;
+pub const BC_STRING_MAX: u32 = 1000;
+pub const COLL_WEIGHTS_MAX: u32 = 0;
+pub const EXPR_NEST_MAX: u32 = 32;
+pub const LINE_MAX: u32 = 2048;
+pub const RE_DUP_MAX: u32 = 255;
+pub const MB_LEN_MAX: u32 = 1;
+pub const NL_ARGMAX: u32 = 32;
+pub const _LIMITS_H: u32 = 1;
+pub const __OBSOLETE_MATH_DEFAULT: u32 = 1;
+pub const __OBSOLETE_MATH: u32 = 1;
+pub const __RAND_MAX: u32 = 2147483647;
+pub const CHAR_BIT: u32 = 8;
+pub const SCHAR_MIN: i32 = -128;
+pub const SCHAR_MAX: u32 = 127;
+pub const UCHAR_MAX: u32 = 255;
+pub const CHAR_MIN: u32 = 0;
+pub const CHAR_MAX: u32 = 255;
+pub const SHRT_MIN: i32 = -32768;
+pub const SHRT_MAX: u32 = 32767;
+pub const USHRT_MAX: u32 = 65535;
+pub const _POSIX2_RE_DUP_MAX: u32 = 255;
 pub const __have_longlong64: u32 = 1;
 pub const __have_long32: u32 = 1;
 pub const ___int8_t_defined: u32 = 1;
@@ -2445,6 +2511,69 @@ pub const CPU_SCS_DEMCR_VC_CORERESET_S: u32 = 0;
 pub const CPU_SCS_STIR_INTID_W: u32 = 9;
 pub const CPU_SCS_STIR_INTID_M: u32 = 511;
 pub const CPU_SCS_STIR_INTID_S: u32 = 0;
+pub const ROM_HAPI_TABLE_ADDR: u32 = 268435528;
+pub const COMPA_IN_NC: u32 = 0;
+pub const COMPA_IN_AUXIO7: u32 = 9;
+pub const COMPA_IN_AUXIO6: u32 = 10;
+pub const COMPA_IN_AUXIO5: u32 = 11;
+pub const COMPA_IN_AUXIO4: u32 = 12;
+pub const COMPA_IN_AUXIO3: u32 = 13;
+pub const COMPA_IN_AUXIO2: u32 = 14;
+pub const COMPA_IN_AUXIO1: u32 = 15;
+pub const COMPA_IN_AUXIO0: u32 = 16;
+pub const COMPA_IN_AUXIO26: u32 = 9;
+pub const COMPA_IN_AUXIO25: u32 = 10;
+pub const COMPA_IN_AUXIO24: u32 = 11;
+pub const COMPA_IN_AUXIO23: u32 = 12;
+pub const COMPA_IN_AUXIO22: u32 = 13;
+pub const COMPA_IN_AUXIO21: u32 = 14;
+pub const COMPA_IN_AUXIO20: u32 = 15;
+pub const COMPA_IN_AUXIO19: u32 = 16;
+pub const COMPA_REF_NC: u32 = 0;
+pub const COMPA_REF_DCOUPL: u32 = 1;
+pub const COMPA_REF_VSS: u32 = 2;
+pub const COMPA_REF_VDDS: u32 = 3;
+pub const COMPA_REF_ADCVREFP: u32 = 4;
+pub const COMPA_REF_AUXIO7: u32 = 9;
+pub const COMPA_REF_AUXIO6: u32 = 10;
+pub const COMPA_REF_AUXIO5: u32 = 11;
+pub const COMPA_REF_AUXIO4: u32 = 12;
+pub const COMPA_REF_AUXIO3: u32 = 13;
+pub const COMPA_REF_AUXIO2: u32 = 14;
+pub const COMPA_REF_AUXIO1: u32 = 15;
+pub const COMPA_REF_AUXIO0: u32 = 16;
+pub const COMPA_REF_AUXIO26: u32 = 9;
+pub const COMPA_REF_AUXIO25: u32 = 10;
+pub const COMPA_REF_AUXIO24: u32 = 11;
+pub const COMPA_REF_AUXIO23: u32 = 12;
+pub const COMPA_REF_AUXIO22: u32 = 13;
+pub const COMPA_REF_AUXIO21: u32 = 14;
+pub const COMPA_REF_AUXIO20: u32 = 15;
+pub const COMPA_REF_AUXIO19: u32 = 16;
+pub const ADC_COMPB_IN_NC: u32 = 0;
+pub const ADC_COMPB_IN_DCOUPL: u32 = 3;
+pub const ADC_COMPB_IN_VSS: u32 = 4;
+pub const ADC_COMPB_IN_VDDS: u32 = 5;
+pub const ADC_COMPB_IN_AUXIO7: u32 = 9;
+pub const ADC_COMPB_IN_AUXIO6: u32 = 10;
+pub const ADC_COMPB_IN_AUXIO5: u32 = 11;
+pub const ADC_COMPB_IN_AUXIO4: u32 = 12;
+pub const ADC_COMPB_IN_AUXIO3: u32 = 13;
+pub const ADC_COMPB_IN_AUXIO2: u32 = 14;
+pub const ADC_COMPB_IN_AUXIO1: u32 = 15;
+pub const ADC_COMPB_IN_AUXIO0: u32 = 16;
+pub const ADC_COMPB_IN_AUXIO26: u32 = 9;
+pub const ADC_COMPB_IN_AUXIO25: u32 = 10;
+pub const ADC_COMPB_IN_AUXIO24: u32 = 11;
+pub const ADC_COMPB_IN_AUXIO23: u32 = 12;
+pub const ADC_COMPB_IN_AUXIO22: u32 = 13;
+pub const ADC_COMPB_IN_AUXIO21: u32 = 14;
+pub const ADC_COMPB_IN_AUXIO20: u32 = 15;
+pub const ADC_COMPB_IN_AUXIO19: u32 = 16;
+pub const COMPB_REF_NC: u32 = 0;
+pub const COMPB_REF_DCOUPL: u32 = 1;
+pub const COMPB_REF_VSS: u32 = 2;
+pub const COMPB_REF_VDDS: u32 = 3;
 pub const DDI_SLAVE_REGS: u32 = 64;
 pub const DDI_PROTECT: u32 = 128;
 pub const DDI_ACK: u32 = 1;
@@ -2453,42 +2582,6 @@ pub const ADI_SLAVE_REGS: u32 = 16;
 pub const ADI_PROTECT: u32 = 128;
 pub const ADI_ACK: u32 = 1;
 pub const ADI_SYNC: u32 = 0;
-pub const __NEWLIB_H__: u32 = 1;
-pub const _ATEXIT_DYNAMIC_ALLOC: u32 = 1;
-pub const _FSEEK_OPTIMIZATION: u32 = 1;
-pub const _FVWRITE_IN_STREAMIO: u32 = 1;
-pub const _HAVE_CC_INHIBIT_LOOP_TO_LIBCALL: u32 = 1;
-pub const _HAVE_INITFINI_ARRAY: u32 = 1;
-pub const _HAVE_LONG_DOUBLE: u32 = 1;
-pub const _LDBL_EQ_DBL: u32 = 1;
-pub const _MB_LEN_MAX: u32 = 1;
-pub const _REENT_CHECK_VERIFY: u32 = 1;
-pub const _UNBUF_STREAM_OPT: u32 = 1;
-pub const _WANT_IO_LONG_LONG: u32 = 1;
-pub const _WANT_REGISTER_FINI: u32 = 1;
-pub const _WANT_USE_GDTOA: u32 = 1;
-pub const _WIDE_ORIENT: u32 = 1;
-pub const __OBSOLETE_MATH_DEFAULT: u32 = 1;
-pub const __OBSOLETE_MATH: u32 = 1;
-pub const __RAND_MAX: u32 = 2147483647;
-pub const __GNUCLIKE_ASM: u32 = 3;
-pub const __GNUCLIKE___TYPEOF: u32 = 1;
-pub const __GNUCLIKE___SECTION: u32 = 1;
-pub const __GNUCLIKE_CTOR_SECTION_HANDLING: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_CONSTANT_P: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_VARARGS: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_STDARG: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_VAALIST: u32 = 1;
-pub const __GNUC_VA_LIST_COMPATIBILITY: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_NEXT_ARG: u32 = 1;
-pub const __GNUCLIKE_BUILTIN_MEMCPY: u32 = 1;
-pub const __CC_SUPPORTS_INLINE: u32 = 1;
-pub const __CC_SUPPORTS___INLINE: u32 = 1;
-pub const __CC_SUPPORTS___INLINE__: u32 = 1;
-pub const __CC_SUPPORTS___FUNC__: u32 = 1;
-pub const __CC_SUPPORTS_WARNING: u32 = 1;
-pub const __CC_SUPPORTS_VARADIC_XXX: u32 = 1;
-pub const __CC_SUPPORTS_DYNAMIC_ARRAY_INIT: u32 = 1;
 pub const _NULL: u32 = 0;
 pub const _ATEXIT_SIZE: u32 = 32;
 pub const _RAND48_SEED_0: u32 = 13070;
@@ -6061,69 +6154,6 @@ pub const AUX_ANAIF_ISRCCTL_RESET_N: u32 = 1;
 pub const AUX_ANAIF_ISRCCTL_RESET_N_BITN: u32 = 0;
 pub const AUX_ANAIF_ISRCCTL_RESET_N_M: u32 = 1;
 pub const AUX_ANAIF_ISRCCTL_RESET_N_S: u32 = 0;
-pub const ROM_HAPI_TABLE_ADDR: u32 = 268435528;
-pub const COMPA_IN_NC: u32 = 0;
-pub const COMPA_IN_AUXIO7: u32 = 9;
-pub const COMPA_IN_AUXIO6: u32 = 10;
-pub const COMPA_IN_AUXIO5: u32 = 11;
-pub const COMPA_IN_AUXIO4: u32 = 12;
-pub const COMPA_IN_AUXIO3: u32 = 13;
-pub const COMPA_IN_AUXIO2: u32 = 14;
-pub const COMPA_IN_AUXIO1: u32 = 15;
-pub const COMPA_IN_AUXIO0: u32 = 16;
-pub const COMPA_IN_AUXIO26: u32 = 9;
-pub const COMPA_IN_AUXIO25: u32 = 10;
-pub const COMPA_IN_AUXIO24: u32 = 11;
-pub const COMPA_IN_AUXIO23: u32 = 12;
-pub const COMPA_IN_AUXIO22: u32 = 13;
-pub const COMPA_IN_AUXIO21: u32 = 14;
-pub const COMPA_IN_AUXIO20: u32 = 15;
-pub const COMPA_IN_AUXIO19: u32 = 16;
-pub const COMPA_REF_NC: u32 = 0;
-pub const COMPA_REF_DCOUPL: u32 = 1;
-pub const COMPA_REF_VSS: u32 = 2;
-pub const COMPA_REF_VDDS: u32 = 3;
-pub const COMPA_REF_ADCVREFP: u32 = 4;
-pub const COMPA_REF_AUXIO7: u32 = 9;
-pub const COMPA_REF_AUXIO6: u32 = 10;
-pub const COMPA_REF_AUXIO5: u32 = 11;
-pub const COMPA_REF_AUXIO4: u32 = 12;
-pub const COMPA_REF_AUXIO3: u32 = 13;
-pub const COMPA_REF_AUXIO2: u32 = 14;
-pub const COMPA_REF_AUXIO1: u32 = 15;
-pub const COMPA_REF_AUXIO0: u32 = 16;
-pub const COMPA_REF_AUXIO26: u32 = 9;
-pub const COMPA_REF_AUXIO25: u32 = 10;
-pub const COMPA_REF_AUXIO24: u32 = 11;
-pub const COMPA_REF_AUXIO23: u32 = 12;
-pub const COMPA_REF_AUXIO22: u32 = 13;
-pub const COMPA_REF_AUXIO21: u32 = 14;
-pub const COMPA_REF_AUXIO20: u32 = 15;
-pub const COMPA_REF_AUXIO19: u32 = 16;
-pub const ADC_COMPB_IN_NC: u32 = 0;
-pub const ADC_COMPB_IN_DCOUPL: u32 = 3;
-pub const ADC_COMPB_IN_VSS: u32 = 4;
-pub const ADC_COMPB_IN_VDDS: u32 = 5;
-pub const ADC_COMPB_IN_AUXIO7: u32 = 9;
-pub const ADC_COMPB_IN_AUXIO6: u32 = 10;
-pub const ADC_COMPB_IN_AUXIO5: u32 = 11;
-pub const ADC_COMPB_IN_AUXIO4: u32 = 12;
-pub const ADC_COMPB_IN_AUXIO3: u32 = 13;
-pub const ADC_COMPB_IN_AUXIO2: u32 = 14;
-pub const ADC_COMPB_IN_AUXIO1: u32 = 15;
-pub const ADC_COMPB_IN_AUXIO0: u32 = 16;
-pub const ADC_COMPB_IN_AUXIO26: u32 = 9;
-pub const ADC_COMPB_IN_AUXIO25: u32 = 10;
-pub const ADC_COMPB_IN_AUXIO24: u32 = 11;
-pub const ADC_COMPB_IN_AUXIO23: u32 = 12;
-pub const ADC_COMPB_IN_AUXIO22: u32 = 13;
-pub const ADC_COMPB_IN_AUXIO21: u32 = 14;
-pub const ADC_COMPB_IN_AUXIO20: u32 = 15;
-pub const ADC_COMPB_IN_AUXIO19: u32 = 16;
-pub const COMPB_REF_NC: u32 = 0;
-pub const COMPB_REF_DCOUPL: u32 = 1;
-pub const COMPB_REF_VSS: u32 = 2;
-pub const COMPB_REF_VDDS: u32 = 3;
 pub const AUXADC_REF_FIXED: u32 = 0;
 pub const AUXADC_REF_VDDS_REL: u32 = 8;
 pub const AUXADC_FIFO_EMPTY_M: u32 = 1;
@@ -17635,30 +17665,6 @@ pub const SSI_MODE_SLAVE: u32 = 1;
 pub const SSI_MODE_SLAVE_OD: u32 = 2;
 pub const SSI_DMA_TX: u32 = 2;
 pub const SSI_DMA_RX: u32 = 1;
-pub const _LIBC_LIMITS_H_: u32 = 1;
-pub const ARG_MAX: u32 = 65536;
-pub const CHILD_MAX: u32 = 40;
-pub const LINK_MAX: u32 = 32767;
-pub const MAX_CANON: u32 = 255;
-pub const MAX_INPUT: u32 = 255;
-pub const NAME_MAX: u32 = 255;
-pub const NGROUPS_MAX: u32 = 16;
-pub const OPEN_MAX: u32 = 64;
-pub const PATH_MAX: u32 = 1024;
-pub const PIPE_BUF: u32 = 512;
-pub const IOV_MAX: u32 = 1024;
-pub const BC_BASE_MAX: u32 = 99;
-pub const BC_DIM_MAX: u32 = 2048;
-pub const BC_SCALE_MAX: u32 = 99;
-pub const BC_STRING_MAX: u32 = 1000;
-pub const COLL_WEIGHTS_MAX: u32 = 0;
-pub const EXPR_NEST_MAX: u32 = 32;
-pub const LINE_MAX: u32 = 2048;
-pub const RE_DUP_MAX: u32 = 255;
-pub const MB_LEN_MAX: u32 = 1;
-pub const NL_ARGMAX: u32 = 32;
-pub const CHAR_MIN: u32 = 0;
-pub const _POSIX2_RE_DUP_MAX: u32 = 255;
 pub const ECRYPT_NAME: &[u8; 8] = b"ChaCha8\0";
 pub const ECRYPT_PROFILE: &[u8; 6] = b"_____\0";
 pub const ECRYPT_MAXKEYSIZE: u32 = 256;
@@ -18765,6 +18771,13 @@ pub const WATCHDOG_LOCK_UNLOCK: u32 = 449635665;
 pub const WATCHDOG_INT_TIMEOUT: u32 = 1;
 pub const WATCHDOG_INT_TYPE_INT: u32 = 0;
 pub const WATCHDOG_INT_TYPE_NMI: u32 = 4;
+pub type wchar_t = cty::c_uint;
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct max_align_t {
+    pub __clang_max_align_nonce1: cty::c_longlong,
+    pub __clang_max_align_nonce2: f64,
+}
 pub type __int8_t = cty::c_schar;
 pub type __uint8_t = cty::c_uchar;
 pub type __int16_t = cty::c_short;
@@ -18810,18 +18823,23 @@ unsafe extern "C" {
     pub fn __error__(pcFilename: *mut cty::c_char, ui32Line: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CPUcpsid"]
     pub fn CPUcpsid() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CPUprimask"]
     pub fn CPUprimask() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CPUcpsie"]
     pub fn CPUcpsie() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CPUbasepriGet"]
     pub fn CPUbasepriGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CPUdelay"]
     pub fn CPUdelay(ui32Count: u32);
 }
 unsafe extern "C" {
@@ -18847,6 +18865,60 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[link_name = "CPU_WriteBufferEnable__extern"]
     pub fn CPU_WriteBufferEnable();
+}
+pub type FPTR_CRC32_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u8, arg2: u32, arg3: u32) -> u32>;
+pub type FPTR_GETFLSIZE_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
+pub type FPTR_GETCHIPID_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
+pub type FPTR_RESERVED1_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32) -> u32>;
+pub type FPTR_RESERVED2_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
+pub type FPTR_RESERVED3_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u8, arg2: u32, arg3: u32) -> u32>;
+pub type FPTR_RESETDEV_T = ::core::option::Option<unsafe extern "C" fn()>;
+pub type FPTR_FLETCHER32_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u16, arg2: u16, arg3: u16) -> u32>;
+pub type FPTR_MINVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
+pub type FPTR_MAXVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
+pub type FPTR_MEANVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
+pub type FPTR_STDDVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
+pub type FPTR_HFSOURCESAFESWITCH_T = ::core::option::Option<unsafe extern "C" fn()>;
+pub type FPTR_RESERVED4_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32)>;
+pub type FPTR_RESERVED5_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32)>;
+pub type FPTR_COMPAIN_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
+pub type FPTR_COMPAREF_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
+pub type FPTR_ADCCOMPBIN_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
+pub type FPTR_COMPBREF_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
+unsafe extern "C" {
+    pub fn MemBusWrkAroundHapiProgramFlash(pui8DataBuffer: *mut u8, ui32Address: u32, ui32Count: u32) -> u32;
+}
+unsafe extern "C" {
+    pub fn MemBusWrkAroundHapiEraseSector(ui32Address: u32) -> u32;
+}
+#[repr(C)]
+#[derive(Debug, Default, Copy, Clone)]
+pub struct HARD_API_T {
+    pub Crc32: FPTR_CRC32_T,
+    pub FlashGetSize: FPTR_GETFLSIZE_T,
+    pub GetChipId: FPTR_GETCHIPID_T,
+    pub ReservedLocation1: FPTR_RESERVED1_T,
+    pub ReservedLocation2: FPTR_RESERVED2_T,
+    pub ReservedLocation3: FPTR_RESERVED3_T,
+    pub ResetDevice: FPTR_RESETDEV_T,
+    pub Fletcher32: FPTR_FLETCHER32_T,
+    pub MinValue: FPTR_MINVAL_T,
+    pub MaxValue: FPTR_MAXVAL_T,
+    pub MeanValue: FPTR_MEANVAL_T,
+    pub StandDeviationValue: FPTR_STDDVAL_T,
+    pub ReservedLocation4: FPTR_RESERVED4_T,
+    pub ReservedLocation5: FPTR_RESERVED5_T,
+    pub HFSourceSafeSwitch: FPTR_HFSOURCESAFESWITCH_T,
+    pub SelectCompAInput: FPTR_COMPAIN_T,
+    pub SelectCompARef: FPTR_COMPAREF_T,
+    pub SelectADCCompBInput: FPTR_ADCCOMPBIN_T,
+    pub SelectCompBRef: FPTR_COMPBREF_T,
+}
+unsafe extern "C" {
+    pub fn SafeHapiVoid(fPtr: FPTR_VOID_VOID_T);
+}
+unsafe extern "C" {
+    pub fn SafeHapiAuxAdiSelect(fPtr: FPTR_VOID_UINT8_T, ut8Signal: u8);
 }
 unsafe extern "C" {
     #[link_name = "AuxAdiDdiSafeWrite__extern"]
@@ -18877,18 +18949,23 @@ unsafe extern "C" {
     pub fn DDI16SetValBit(ui32Base: u32, ui32Reg: u32, bWriteHigh: bool, ui32Mask: u32, ui32Val: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_DDI32RegWrite"]
     pub fn DDI32RegWrite(ui32Base: u32, ui32Reg: u32, ui32Val: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_DDI16BitWrite"]
     pub fn DDI16BitWrite(ui32Base: u32, ui32Reg: u32, ui32Mask: u32, ui32WrData: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_DDI16BitfieldWrite"]
     pub fn DDI16BitfieldWrite(ui32Base: u32, ui32Reg: u32, ui32Mask: u32, ui32Shift: u32, ui32Data: u16);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_DDI16BitRead"]
     pub fn DDI16BitRead(ui32Base: u32, ui32Reg: u32, ui32Mask: u32) -> u16;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_DDI16BitfieldRead"]
     pub fn DDI16BitfieldRead(ui32Base: u32, ui32Reg: u32, ui32Mask: u32, ui32Shift: u32) -> u16;
 }
 unsafe extern "C" {
@@ -18950,19 +19027,6 @@ unsafe extern "C" {
 unsafe extern "C" {
     #[link_name = "ADI16SetValBit__extern"]
     pub fn ADI16SetValBit(ui32Base: u32, ui32Reg: u32, ui32Mask: u32, ui32Val: u32);
-}
-unsafe extern "C" {
-    pub fn SafeHapiVoid(fPtr: FPTR_VOID_VOID_T);
-}
-unsafe extern "C" {
-    pub fn SafeHapiAuxAdiSelect(fPtr: FPTR_VOID_UINT8_T, ut8Signal: u8);
-}
-pub type wchar_t = cty::c_uint;
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct max_align_t {
-    pub __clang_max_align_nonce1: cty::c_longlong,
-    pub __clang_max_align_nonce2: f64,
 }
 pub type wint_t = cty::c_int;
 pub type __blkcnt_t = cty::c_long;
@@ -19027,7 +19091,7 @@ pub type __nl_item = cty::c_int;
 pub type __nlink_t = cty::c_ushort;
 pub type __suseconds_t = cty::c_long;
 pub type __useconds_t = cty::c_ulong;
-pub type __va_list = u32;
+pub type __va_list = *mut cty::c_char;
 pub type __ULong = cty::c_ulong;
 pub type _LOCK_T = cty::c_int;
 pub type _LOCK_RECURSIVE_T = cty::c_int;
@@ -19497,36 +19561,47 @@ unsafe extern "C" {
     pub fn strsignal(__signo: cty::c_int) -> *mut cty::c_char;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntRegister"]
     pub fn IntRegister(ui32Interrupt: u32, pfnHandler: ::core::option::Option<unsafe extern "C" fn()>);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntUnregister"]
     pub fn IntUnregister(ui32Interrupt: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPriorityGroupingSet"]
     pub fn IntPriorityGroupingSet(ui32Bits: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPriorityGroupingGet"]
     pub fn IntPriorityGroupingGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPrioritySet"]
     pub fn IntPrioritySet(ui32Interrupt: u32, ui8Priority: u8);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPriorityGet"]
     pub fn IntPriorityGet(ui32Interrupt: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntEnable"]
     pub fn IntEnable(ui32Interrupt: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntDisable"]
     pub fn IntDisable(ui32Interrupt: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPendSet"]
     pub fn IntPendSet(ui32Interrupt: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPendGet"]
     pub fn IntPendGet(ui32Interrupt: u32) -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IntPendClear"]
     pub fn IntPendClear(ui32Interrupt: u32);
 }
 unsafe extern "C" {
@@ -19546,6 +19621,7 @@ unsafe extern "C" {
     pub fn IntPriorityMaskGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESStartDMAOperation"]
     pub fn AESStartDMAOperation(
         channel0Addr: *const u8,
         channel0Length: u32,
@@ -19554,27 +19630,35 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESSetInitializationVector"]
     pub fn AESSetInitializationVector(initializationVector: *const u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESWriteCCMInitializationVector"]
     pub fn AESWriteCCMInitializationVector(nonce: *const u8, nonceLength: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESReadTag"]
     pub fn AESReadTag(tag: *mut u8, tagLength: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESVerifyTag"]
     pub fn AESVerifyTag(tag: *const u8, tagLength: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESWriteToKeyStore"]
     pub fn AESWriteToKeyStore(aesKey: *const u8, aesKeyLength: u32, keyStoreArea: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESReadFromKeyStore"]
     pub fn AESReadFromKeyStore(keyStoreArea: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESWaitForIRQFlags"]
     pub fn AESWaitForIRQFlags(irqFlags: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AESConfigureCCMCtrl"]
     pub fn AESConfigureCCMCtrl(nonceLength: u32, macLength: u32, encrypt: bool);
 }
 unsafe extern "C" {
@@ -19638,6 +19722,7 @@ unsafe extern "C" {
     pub fn AONBatMonDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONBatMonTemperatureGetDegC"]
     pub fn AONBatMonTemperatureGetDegC() -> i32;
 }
 unsafe extern "C" {
@@ -19653,21 +19738,27 @@ unsafe extern "C" {
     pub fn AONBatMonNewTempMeasureReady() -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventMcuWakeUpSet"]
     pub fn AONEventMcuWakeUpSet(ui32MCUWUEvent: u32, ui32EventSrc: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventMcuWakeUpGet"]
     pub fn AONEventMcuWakeUpGet(ui32MCUWUEvent: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventAuxWakeUpSet"]
     pub fn AONEventAuxWakeUpSet(ui32AUXWUEvent: u32, ui32EventSrc: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventAuxWakeUpGet"]
     pub fn AONEventAuxWakeUpGet(ui32AUXWUEvent: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventMcuSet"]
     pub fn AONEventMcuSet(ui32MCUEvent: u32, ui32EventSrc: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONEventMcuGet"]
     pub fn AONEventMcuGet(ui32MCUEvent: u32) -> u32;
 }
 unsafe extern "C" {
@@ -19783,9 +19874,11 @@ unsafe extern "C" {
     pub fn AONRTCCompareValueGet(ui32Channel: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONRTCCurrentCompareValueGet"]
     pub fn AONRTCCurrentCompareValueGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONRTCCurrent64BitValueGet"]
     pub fn AONRTCCurrent64BitValueGet() -> u64;
 }
 unsafe extern "C" {
@@ -19833,6 +19926,7 @@ unsafe extern "C" {
     pub fn AONWUCAuxWakeupEvent(ui32Mode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONWUCAuxReset"]
     pub fn AONWUCAuxReset();
 }
 unsafe extern "C" {
@@ -19868,6 +19962,7 @@ unsafe extern "C" {
     pub fn AONWUCMcuResetStatusGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONWUCRechargeCtrlConfigSet"]
     pub fn AONWUCRechargeCtrlConfigSet(bAdaptEnable: bool, ui32AdaptRate: u32, ui32Period: u32, ui32MaxPeriod: u32);
 }
 unsafe extern "C" {
@@ -19875,73 +19970,31 @@ unsafe extern "C" {
     pub fn AONWUCRechargeCtrlConfigGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AONWUCOscConfig"]
     pub fn AONWUCOscConfig(ui32Period: u32);
 }
 unsafe extern "C" {
     #[link_name = "AONWUCJtagPowerOff__extern"]
     pub fn AONWUCJtagPowerOff();
 }
-pub type FPTR_CRC32_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u8, arg2: u32, arg3: u32) -> u32>;
-pub type FPTR_GETFLSIZE_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
-pub type FPTR_GETCHIPID_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
-pub type FPTR_RESERVED1_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32) -> u32>;
-pub type FPTR_RESERVED2_T = ::core::option::Option<unsafe extern "C" fn() -> u32>;
-pub type FPTR_RESERVED3_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u8, arg2: u32, arg3: u32) -> u32>;
-pub type FPTR_RESETDEV_T = ::core::option::Option<unsafe extern "C" fn()>;
-pub type FPTR_FLETCHER32_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u16, arg2: u16, arg3: u16) -> u32>;
-pub type FPTR_MINVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
-pub type FPTR_MAXVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
-pub type FPTR_MEANVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
-pub type FPTR_STDDVAL_T = ::core::option::Option<unsafe extern "C" fn(arg1: *mut u32, arg2: u32) -> u32>;
-pub type FPTR_HFSOURCESAFESWITCH_T = ::core::option::Option<unsafe extern "C" fn()>;
-pub type FPTR_RESERVED4_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32)>;
-pub type FPTR_RESERVED5_T = ::core::option::Option<unsafe extern "C" fn(arg1: u32)>;
-pub type FPTR_COMPAIN_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
-pub type FPTR_COMPAREF_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
-pub type FPTR_ADCCOMPBIN_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
-pub type FPTR_COMPBREF_T = ::core::option::Option<unsafe extern "C" fn(arg1: u8)>;
 unsafe extern "C" {
-    pub fn MemBusWrkAroundHapiProgramFlash(pui8DataBuffer: *mut u8, ui32Address: u32, ui32Count: u32) -> u32;
-}
-unsafe extern "C" {
-    pub fn MemBusWrkAroundHapiEraseSector(ui32Address: u32) -> u32;
-}
-#[repr(C)]
-#[derive(Debug, Default, Copy, Clone)]
-pub struct HARD_API_T {
-    pub Crc32: FPTR_CRC32_T,
-    pub FlashGetSize: FPTR_GETFLSIZE_T,
-    pub GetChipId: FPTR_GETCHIPID_T,
-    pub ReservedLocation1: FPTR_RESERVED1_T,
-    pub ReservedLocation2: FPTR_RESERVED2_T,
-    pub ReservedLocation3: FPTR_RESERVED3_T,
-    pub ResetDevice: FPTR_RESETDEV_T,
-    pub Fletcher32: FPTR_FLETCHER32_T,
-    pub MinValue: FPTR_MINVAL_T,
-    pub MaxValue: FPTR_MAXVAL_T,
-    pub MeanValue: FPTR_MEANVAL_T,
-    pub StandDeviationValue: FPTR_STDDVAL_T,
-    pub ReservedLocation4: FPTR_RESERVED4_T,
-    pub ReservedLocation5: FPTR_RESERVED5_T,
-    pub HFSourceSafeSwitch: FPTR_HFSOURCESAFESWITCH_T,
-    pub SelectCompAInput: FPTR_COMPAIN_T,
-    pub SelectCompARef: FPTR_COMPAREF_T,
-    pub SelectADCCompBInput: FPTR_ADCCOMPBIN_T,
-    pub SelectCompBRef: FPTR_COMPBREF_T,
-}
-unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCDisable"]
     pub fn AUXADCDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCEnableAsync"]
     pub fn AUXADCEnableAsync(refSource: u32, trigger: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCEnableSync"]
     pub fn AUXADCEnableSync(refSource: u32, sampleTime: u32, trigger: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCDisableInputScaling"]
     pub fn AUXADCDisableInputScaling();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCFlushFifo"]
     pub fn AUXADCFlushFifo();
 }
 unsafe extern "C" {
@@ -19953,9 +20006,11 @@ unsafe extern "C" {
     pub fn AUXADCGetFifoStatus() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCReadFifo"]
     pub fn AUXADCReadFifo() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCPopFifo"]
     pub fn AUXADCPopFifo() -> u32;
 }
 unsafe extern "C" {
@@ -19963,21 +20018,27 @@ unsafe extern "C" {
     pub fn AUXADCSelectInput(input: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCGetAdjustmentGain"]
     pub fn AUXADCGetAdjustmentGain(refSource: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCGetAdjustmentOffset"]
     pub fn AUXADCGetAdjustmentOffset(refSource: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCValueToMicrovolts"]
     pub fn AUXADCValueToMicrovolts(fixedRefVoltage: i32, adcValue: i32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCMicrovoltsToValue"]
     pub fn AUXADCMicrovoltsToValue(fixedRefVoltage: i32, microvolts: i32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCAdjustValueForGainAndOffset"]
     pub fn AUXADCAdjustValueForGainAndOffset(adcValue: i32, gain: i32, offset: i32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXADCUnadjustValueForGainAndOffset"]
     pub fn AUXADCUnadjustValueForGainAndOffset(adcValue: i32, gain: i32, offset: i32) -> i32;
 }
 unsafe extern "C" {
@@ -19997,6 +20058,7 @@ unsafe extern "C" {
     pub fn AUXTDCStatusGet(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTDCConfigSet"]
     pub fn AUXTDCConfigSet(ui32Base: u32, ui32StartCondition: u32, ui32StopCondition: u32);
 }
 unsafe extern "C" {
@@ -20012,6 +20074,7 @@ unsafe extern "C" {
     pub fn AUXTDCIdleForce(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTDCMeasurementDone"]
     pub fn AUXTDCMeasurementDone(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20043,12 +20106,15 @@ unsafe extern "C" {
     pub fn AUXTDCCounterGet(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTimerConfigure"]
     pub fn AUXTimerConfigure(ui32Timer: u32, ui32Config: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTimerStart"]
     pub fn AUXTimerStart(ui32Timer: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTimerStop"]
     pub fn AUXTimerStop(ui32Timer: u32);
 }
 unsafe extern "C" {
@@ -20060,18 +20126,23 @@ unsafe extern "C" {
     pub fn AUXTimerTargetValGet(ui32Timer: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTimerPrescaleSet"]
     pub fn AUXTimerPrescaleSet(ui32Timer: u32, ui32PrescaleDiv: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXTimerPrescaleGet"]
     pub fn AUXTimerPrescaleGet(ui32Timer: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXWUCClockEnable"]
     pub fn AUXWUCClockEnable(ui32Clocks: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXWUCClockDisable"]
     pub fn AUXWUCClockDisable(ui32Clocks: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXWUCClockStatus"]
     pub fn AUXWUCClockStatus(ui32Clocks: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20079,6 +20150,7 @@ unsafe extern "C" {
     pub fn AUXWUCClockFreqReq(ui32ClockFreq: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_AUXWUCPowerCtrl"]
     pub fn AUXWUCPowerCtrl(ui32PowerMode: u32);
 }
 unsafe extern "C" {
@@ -20111,6 +20183,7 @@ pub const ProtocolBitVector_t_PROTOCOLBIT_IEEE_802_15_4: ProtocolBitVector_t = 4
 pub const ProtocolBitVector_t_PROTOCOLBIT_Proprietary: ProtocolBitVector_t = 8;
 pub type ProtocolBitVector_t = cty::c_uint;
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ChipInfo_GetSupportedProtocol_BV"]
     pub fn ChipInfo_GetSupportedProtocol_BV() -> ProtocolBitVector_t;
 }
 unsafe extern "C" {
@@ -20134,6 +20207,7 @@ pub const PackageType_t_PACKAGE_WCSP: PackageType_t = 4;
 pub const PackageType_t_PACKAGE_7x7_Q1: PackageType_t = 5;
 pub type PackageType_t = cty::c_int;
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ChipInfo_GetPackageType"]
     pub fn ChipInfo_GetPackageType() -> PackageType_t;
 }
 unsafe extern "C" {
@@ -20190,6 +20264,7 @@ pub const ChipType_t_CHIP_TYPE_CC1352: ChipType_t = 13;
 pub const ChipType_t_CHIP_TYPE_CC1352P: ChipType_t = 14;
 pub type ChipType_t = cty::c_int;
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ChipInfo_GetChipType"]
     pub fn ChipInfo_GetChipType() -> ChipType_t;
 }
 pub const ChipFamily_t_FAMILY_Unknown: ChipFamily_t = -1;
@@ -20200,6 +20275,7 @@ pub const ChipFamily_t_FAMILY_CC26x0R2: ChipFamily_t = 3;
 pub const ChipFamily_t_FAMILY_CC13x2_CC26x2: ChipFamily_t = 4;
 pub type ChipFamily_t = cty::c_int;
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ChipInfo_GetChipFamily"]
     pub fn ChipInfo_GetChipFamily() -> ChipFamily_t;
 }
 unsafe extern "C" {
@@ -20232,6 +20308,7 @@ pub const HwRevision_t_HWREV_2_3: HwRevision_t = 23;
 pub const HwRevision_t_HWREV_2_4: HwRevision_t = 24;
 pub type HwRevision_t = cty::c_int;
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ChipInfo_GetHwRevision"]
     pub fn ChipInfo_GetHwRevision() -> HwRevision_t;
 }
 unsafe extern "C" {
@@ -20271,12 +20348,15 @@ unsafe extern "C" {
     pub fn ChipInfo_HwRevisionIs_GTEQ_2_4() -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_ThisLibraryIsFor_CC26x0_HwRev22AndLater_HaltIfViolated"]
     pub fn ThisLibraryIsFor_CC26x0_HwRev22AndLater_HaltIfViolated();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOAesLoadKey"]
     pub fn CRYPTOAesLoadKey(pui32AesKey: *mut u32, ui32KeyLocation: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOAesCbc"]
     pub fn CRYPTOAesCbc(
         pui32MsgIn: *mut u32,
         pui32MsgOut: *mut u32,
@@ -20288,9 +20368,11 @@ unsafe extern "C" {
     ) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOAesCbcStatus"]
     pub fn CRYPTOAesCbcStatus() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOAesEcb"]
     pub fn CRYPTOAesEcb(
         pui32MsgIn: *mut u32,
         pui32MsgOut: *mut u32,
@@ -20300,6 +20382,7 @@ unsafe extern "C" {
     ) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOAesEcbStatus"]
     pub fn CRYPTOAesEcbStatus() -> u32;
 }
 unsafe extern "C" {
@@ -20311,6 +20394,7 @@ unsafe extern "C" {
     pub fn CRYPTOAesCbcFinish();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmAuthEncrypt"]
     pub fn CRYPTOCcmAuthEncrypt(
         bEncrypt: bool,
         ui32AuthLength: u32,
@@ -20325,12 +20409,15 @@ unsafe extern "C" {
     ) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmAuthEncryptStatus"]
     pub fn CRYPTOCcmAuthEncryptStatus() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmAuthEncryptResultGet"]
     pub fn CRYPTOCcmAuthEncryptResultGet(ui32TagLength: u32, pui32CcmTag: *mut u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmInvAuthDecrypt"]
     pub fn CRYPTOCcmInvAuthDecrypt(
         bDecrypt: bool,
         ui32AuthLength: u32,
@@ -20345,9 +20432,11 @@ unsafe extern "C" {
     ) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmInvAuthDecryptStatus"]
     pub fn CRYPTOCcmInvAuthDecryptStatus() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTOCcmInvAuthDecryptResultGet"]
     pub fn CRYPTOCcmInvAuthDecryptResultGet(
         ui32AuthLength: u32,
         pui32CipherText: *mut u32,
@@ -20360,9 +20449,11 @@ unsafe extern "C" {
     pub fn CRYPTODmaStatus() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTODmaEnable"]
     pub fn CRYPTODmaEnable(ui32Channels: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_CRYPTODmaDisable"]
     pub fn CRYPTODmaDisable(ui32Channels: u32);
 }
 unsafe extern "C" {
@@ -20429,18 +20520,23 @@ unsafe extern "C" {
     pub fn FlashSizeGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashPowerModeSet"]
     pub fn FlashPowerModeSet(ui32PowerMode: u32, ui32BankGracePeriod: u32, ui32PumpGracePeriod: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashPowerModeGet"]
     pub fn FlashPowerModeGet() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashProtectionSet"]
     pub fn FlashProtectionSet(ui32SectorAddress: u32, ui32ProtectMode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashProtectionGet"]
     pub fn FlashProtectionGet(ui32SectorAddress: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashProtectionSave"]
     pub fn FlashProtectionSave(ui32SectorAddress: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20476,15 +20572,19 @@ unsafe extern "C" {
     pub fn FlashIntClear(ui32IntFlags: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashSectorErase"]
     pub fn FlashSectorErase(ui32SectorAddress: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashProgram"]
     pub fn FlashProgram(pui8DataBuffer: *mut u8, ui32Address: u32, ui32Count: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashEfuseReadRow"]
     pub fn FlashEfuseReadRow(pui32EfuseData: *mut u32, ui32RowAddress: u32) -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_FlashDisableSectorsForWrite"]
     pub fn FlashDisableSectorsForWrite();
 }
 unsafe extern "C" {
@@ -20560,6 +20660,7 @@ unsafe extern "C" {
     pub fn GPIO_clearEventMultiDio(dioMask: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2CMasterInitExpClk"]
     pub fn I2CMasterInitExpClk(ui32Base: u32, ui32I2CClk: u32, bFast: bool);
 }
 unsafe extern "C" {
@@ -20595,6 +20696,7 @@ unsafe extern "C" {
     pub fn I2CMasterDataPut(ui32Base: u32, ui8Data: u8);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2CMasterErr"]
     pub fn I2CMasterErr(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20658,9 +20760,11 @@ unsafe extern "C" {
     pub fn I2CSlaveIntStatus(ui32Base: u32, bMasked: bool) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2CIntRegister"]
     pub fn I2CIntRegister(ui32Base: u32, pfnHandler: ::core::option::Option<unsafe extern "C" fn()>);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2CIntUnregister"]
     pub fn I2CIntUnregister(ui32Base: u32);
 }
 #[repr(C)]
@@ -20680,6 +20784,7 @@ unsafe extern "C" {
     pub static mut g_pControlTable: *mut I2SControlTable;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SEnable"]
     pub fn I2SEnable(ui32Base: u32);
 }
 unsafe extern "C" {
@@ -20687,9 +20792,11 @@ unsafe extern "C" {
     pub fn I2SDisable(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SAudioFormatConfigure"]
     pub fn I2SAudioFormatConfigure(ui32Base: u32, ui32FmtCfg: u32, ui32BitClkDelay: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SChannelConfigure"]
     pub fn I2SChannelConfigure(ui32Base: u32, ui32Chan0Cfg: u32, ui32Chan1Cfg: u32);
 }
 unsafe extern "C" {
@@ -20697,6 +20804,7 @@ unsafe extern "C" {
     pub fn I2SClockConfigure(ui32Base: u32, ui32ClkConfig: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SBufferConfig"]
     pub fn I2SBufferConfig(
         ui32Base: u32,
         ui32InBufBase: u32,
@@ -20706,9 +20814,11 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SPointerUpdate"]
     pub fn I2SPointerUpdate(ui32Base: u32, bInput: bool);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SPointerSet"]
     pub fn I2SPointerSet(ui32Base: u32, bInput: bool, pNextPointer: *mut cty::c_void);
 }
 unsafe extern "C" {
@@ -20720,6 +20830,7 @@ unsafe extern "C" {
     pub fn I2SIntUnregister(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SSampleStampConfigure"]
     pub fn I2SSampleStampConfigure(ui32Base: u32, bInput: bool, bOutput: bool);
 }
 unsafe extern "C" {
@@ -20747,6 +20858,7 @@ unsafe extern "C" {
     pub fn I2SSampleStampDisable(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_I2SSampleStampGet"]
     pub fn I2SSampleStampGet(ui32Base: u32, ui32Channel: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20818,36 +20930,47 @@ unsafe extern "C" {
     pub fn I2SWclkCounterReset(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPortConfigureSet"]
     pub fn IOCPortConfigureSet(ui32IOId: u32, ui32PortId: u32, ui32IOConfig: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPortConfigureGet"]
     pub fn IOCPortConfigureGet(ui32IOId: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOShutdownSet"]
     pub fn IOCIOShutdownSet(ui32IOId: u32, ui32IOShutdown: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOModeSet"]
     pub fn IOCIOModeSet(ui32IOId: u32, ui32IOMode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOIntSet"]
     pub fn IOCIOIntSet(ui32IOId: u32, ui32Int: u32, ui32EdgeDet: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOPortPullSet"]
     pub fn IOCIOPortPullSet(ui32IOId: u32, ui32Pull: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOHystSet"]
     pub fn IOCIOHystSet(ui32IOId: u32, ui32Hysteresis: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOInputSet"]
     pub fn IOCIOInputSet(ui32IOId: u32, ui32Input: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOSlewCtrlSet"]
     pub fn IOCIOSlewCtrlSet(ui32IOId: u32, ui32SlewEnable: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIODrvStrengthSet"]
     pub fn IOCIODrvStrengthSet(ui32IOId: u32, ui32IOCurrent: u32, ui32DrvStrength: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIOPortIdSet"]
     pub fn IOCIOPortIdSet(ui32IOId: u32, ui32PortId: u32);
 }
 unsafe extern "C" {
@@ -20859,9 +20982,11 @@ unsafe extern "C" {
     pub fn IOCIntUnregister();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIntEnable"]
     pub fn IOCIntEnable(ui32IOId: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCIntDisable"]
     pub fn IOCIntDisable(ui32IOId: u32);
 }
 unsafe extern "C" {
@@ -20873,24 +20998,31 @@ unsafe extern "C" {
     pub fn IOCIntStatus(ui32IOId: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeGpioInput"]
     pub fn IOCPinTypeGpioInput(ui32IOId: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeGpioOutput"]
     pub fn IOCPinTypeGpioOutput(ui32IOId: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeUart"]
     pub fn IOCPinTypeUart(ui32Base: u32, ui32Rx: u32, ui32Tx: u32, ui32Cts: u32, ui32Rts: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeSsiMaster"]
     pub fn IOCPinTypeSsiMaster(ui32Base: u32, ui32Rx: u32, ui32Tx: u32, ui32Fss: u32, ui32Clk: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeSsiSlave"]
     pub fn IOCPinTypeSsiSlave(ui32Base: u32, ui32Rx: u32, ui32Tx: u32, ui32Fss: u32, ui32Clk: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeI2c"]
     pub fn IOCPinTypeI2c(ui32Base: u32, ui32Data: u32, ui32Clk: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_IOCPinTypeAux"]
     pub fn IOCPinTypeAux(ui32IOId: u32);
 }
 unsafe extern "C" {
@@ -20906,9 +21038,11 @@ unsafe extern "C" {
     pub fn OSCClockLossEventDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCClockSourceSet"]
     pub fn OSCClockSourceSet(ui32SrcClk: u32, ui32Osc: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCClockSourceGet"]
     pub fn OSCClockSourceGet(ui32SrcClk: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20920,36 +21054,47 @@ unsafe extern "C" {
     pub fn OSCHfSourceSwitch();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_GetStartupTime"]
     pub fn OSCHF_GetStartupTime(timeUntilWakeupInMs: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_TurnOnXosc"]
     pub fn OSCHF_TurnOnXosc();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_AttemptToSwitchToXosc"]
     pub fn OSCHF_AttemptToSwitchToXosc() -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_SwitchToRcOscTurnOffXosc"]
     pub fn OSCHF_SwitchToRcOscTurnOffXosc();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_DebugGetCrystalAmplitude"]
     pub fn OSCHF_DebugGetCrystalAmplitude() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSCHF_DebugGetExpectedAverageCrystalAmplitude"]
     pub fn OSCHF_DebugGetExpectedAverageCrystalAmplitude() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSC_HPOSCRelativeFrequencyOffsetGet"]
     pub fn OSC_HPOSCRelativeFrequencyOffsetGet(tempDegC: i32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSC_AdjustXoscHfCapArray"]
     pub fn OSC_AdjustXoscHfCapArray(capArrDelta: i32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_OSC_HPOSCRelativeFrequencyOffsetToRFCoreFormatConvert"]
     pub fn OSC_HPOSCRelativeFrequencyOffsetToRFCoreFormatConvert(HPOSC_RelFreqOffset: i32) -> i16;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMInfClockConfigureSet"]
     pub fn PRCMInfClockConfigureSet(ui32ClkDiv: u32, ui32PowerMode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMInfClockConfigureGet"]
     pub fn PRCMInfClockConfigureGet(ui32PowerMode: u32) -> u32;
 }
 unsafe extern "C" {
@@ -20981,9 +21126,11 @@ unsafe extern "C" {
     pub fn PRCMAudioClockDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMAudioClockConfigSet"]
     pub fn PRCMAudioClockConfigSet(ui32ClkConfig: u32, ui32SampleRate: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMAudioClockConfigSetOverride"]
     pub fn PRCMAudioClockConfigSetOverride(ui32ClkConfig: u32, ui32MstDiv: u32, ui32BitDiv: u32, ui32WordDiv: u32);
 }
 unsafe extern "C" {
@@ -20996,9 +21143,11 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMAudioClockInternalSource"]
     pub fn PRCMAudioClockInternalSource();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMAudioClockExternalSource"]
     pub fn PRCMAudioClockExternalSource();
 }
 unsafe extern "C" {
@@ -21018,9 +21167,11 @@ unsafe extern "C" {
     pub fn PRCMDomainDisable(ui32Domains: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPowerDomainOn"]
     pub fn PRCMPowerDomainOn(ui32Domains: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPowerDomainOff"]
     pub fn PRCMPowerDomainOff(ui32Domains: u32);
 }
 unsafe extern "C" {
@@ -21028,24 +21179,31 @@ unsafe extern "C" {
     pub fn PRCMRfPowerDownWhenIdle();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralRunEnable"]
     pub fn PRCMPeripheralRunEnable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralRunDisable"]
     pub fn PRCMPeripheralRunDisable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralSleepEnable"]
     pub fn PRCMPeripheralSleepEnable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralSleepDisable"]
     pub fn PRCMPeripheralSleepDisable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralDeepSleepEnable"]
     pub fn PRCMPeripheralDeepSleepEnable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPeripheralDeepSleepDisable"]
     pub fn PRCMPeripheralDeepSleepDisable(ui32Peripheral: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMPowerDomainStatus"]
     pub fn PRCMPowerDomainStatus(ui32Domains: u32) -> u32;
 }
 unsafe extern "C" {
@@ -21057,6 +21215,7 @@ unsafe extern "C" {
     pub fn PRCMSleep();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PRCMDeepSleep"]
     pub fn PRCMDeepSleep();
 }
 unsafe extern "C" {
@@ -21068,6 +21227,7 @@ unsafe extern "C" {
     pub fn PRCMCacheRetentionDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_PowerCtrlSourceSet"]
     pub fn PowerCtrlSourceSet(ui32PowerConfig: u32);
 }
 unsafe extern "C" {
@@ -49031,6 +49191,7 @@ unsafe extern "C" {
     pub fn RFCHwIntDisable(ui32Mask: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCCpeIntGetAndClear"]
     pub fn RFCCpeIntGetAndClear(ui32Mask: u32) -> u32;
 }
 unsafe extern "C" {
@@ -49038,33 +49199,43 @@ unsafe extern "C" {
     pub fn RFCAckIntClear();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCDoorbellSendTo"]
     pub fn RFCDoorbellSendTo(pOp: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCSynthPowerDown"]
     pub fn RFCSynthPowerDown();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCCpePatchReset"]
     pub fn RFCCpePatchReset();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCOverrideSearch"]
     pub fn RFCOverrideSearch(pOverride: *const u32, pattern: u32, mask: u32, searchDepth: u8) -> u8;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCOverrideUpdate"]
     pub fn RFCOverrideUpdate(pOpSetup: *mut rfc_radioOp_t, pParams: *mut u32) -> u8;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCHwIntGetAndClear"]
     pub fn RFCHwIntGetAndClear(ui32Mask: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCRfTrimRead"]
     pub fn RFCRfTrimRead(pOpSetup: *mut rfc_radioOp_t, rfTrim: *mut rfTrim_t);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCRfTrimSet"]
     pub fn RFCRfTrimSet(rfTrim: *mut rfTrim_t);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCRTrim"]
     pub fn RFCRTrim(pOpSetup: *mut rfc_radioOp_t) -> u8;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_RFCAdi3VcoLdoVoltageMode"]
     pub fn RFCAdi3VcoLdoVoltageMode(bEnable: bool);
 }
 unsafe extern "C" {
@@ -49177,57 +49348,75 @@ unsafe extern "C" {
     pub fn SHA256_output(memory: *mut SHA256_memory_t, pBufOut: *mut u8) -> u8;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupTrimDevice"]
     pub fn SetupTrimDevice();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupAfterColdResetWakeupFromShutDownCfg1"]
     pub fn SetupAfterColdResetWakeupFromShutDownCfg1(ccfg_ModeConfReg: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupAfterColdResetWakeupFromShutDownCfg2"]
     pub fn SetupAfterColdResetWakeupFromShutDownCfg2(ui32Fcfg1Revision: u32, ccfg_ModeConfReg: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupAfterColdResetWakeupFromShutDownCfg3"]
     pub fn SetupAfterColdResetWakeupFromShutDownCfg3(ccfg_ModeConfReg: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAdcShModeEn"]
     pub fn SetupGetTrimForAdcShModeEn(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAdcShVbufEn"]
     pub fn SetupGetTrimForAdcShVbufEn(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAmpcompCtrl"]
     pub fn SetupGetTrimForAmpcompCtrl(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAmpcompTh1"]
     pub fn SetupGetTrimForAmpcompTh1() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAmpcompTh2"]
     pub fn SetupGetTrimForAmpcompTh2() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForAnabypassValue1"]
     pub fn SetupGetTrimForAnabypassValue1(ccfg_ModeConfReg: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForDblrLoopFilterResetVoltage"]
     pub fn SetupGetTrimForDblrLoopFilterResetVoltage(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForRadcExtCfg"]
     pub fn SetupGetTrimForRadcExtCfg(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForRcOscLfIBiasTrim"]
     pub fn SetupGetTrimForRcOscLfIBiasTrim(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForRcOscLfRtuneCtuneTrim"]
     pub fn SetupGetTrimForRcOscLfRtuneCtuneTrim() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForXoscHfCtl"]
     pub fn SetupGetTrimForXoscHfCtl(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForXoscHfFastStart"]
     pub fn SetupGetTrimForXoscHfFastStart() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForXoscHfIbiastherm"]
     pub fn SetupGetTrimForXoscHfIbiastherm() -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupGetTrimForXoscLfRegulatorAndCmirrwrRatio"]
     pub fn SetupGetTrimForXoscLfRegulatorAndCmirrwrRatio(ui32Fcfg1Revision: u32) -> u32;
 }
 unsafe extern "C" {
@@ -49235,12 +49424,15 @@ unsafe extern "C" {
     pub fn SetupSignExtendVddrTrimValue(ui32VddrTrimVal: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupSetCacheModeAccordingToCcfgSetting"]
     pub fn SetupSetCacheModeAccordingToCcfgSetting();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SetupSetAonRtcSubSecInc"]
     pub fn SetupSetAonRtcSubSecInc(subSecInc: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SMPHAcquire"]
     pub fn SMPHAcquire(ui32Semaphore: u32);
 }
 unsafe extern "C" {
@@ -49252,6 +49444,7 @@ unsafe extern "C" {
     pub fn SMPHRelease(ui32Semaphore: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIConfigSetExpClk"]
     pub fn SSIConfigSetExpClk(
         ui32Base: u32,
         ui32SSIClk: u32,
@@ -49270,15 +49463,19 @@ unsafe extern "C" {
     pub fn SSIDisable(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIDataPut"]
     pub fn SSIDataPut(ui32Base: u32, ui32Data: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIDataPutNonBlocking"]
     pub fn SSIDataPutNonBlocking(ui32Base: u32, ui32Data: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIDataGet"]
     pub fn SSIDataGet(ui32Base: u32, pui32Data: *mut u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIDataGetNonBlocking"]
     pub fn SSIDataGetNonBlocking(ui32Base: u32, pui32Data: *mut u32) -> i32;
 }
 unsafe extern "C" {
@@ -49290,9 +49487,11 @@ unsafe extern "C" {
     pub fn SSIStatus(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIIntRegister"]
     pub fn SSIIntRegister(ui32Base: u32, pfnHandler: ::core::option::Option<unsafe extern "C" fn()>);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SSIIntUnregister"]
     pub fn SSIIntUnregister(ui32Base: u32);
 }
 unsafe extern "C" {
@@ -49424,15 +49623,19 @@ unsafe extern "C" {
     pub fn poly1305_blocks(st: *mut poly1305_state_internal_t, m: *const cty::c_uchar, bytes: usize);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_VIMSConfigure"]
     pub fn VIMSConfigure(ui32Base: u32, bRoundRobin: bool, bPrefetch: bool);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_VIMSModeSet"]
     pub fn VIMSModeSet(ui32Base: u32, ui32Mode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_VIMSModeGet"]
     pub fn VIMSModeGet(ui32Base: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_VIMSModeSafeSet"]
     pub fn VIMSModeSafeSet(ui32Base: u32, ui32NewMode: u32, blocking: bool);
 }
 unsafe extern "C" {
@@ -49456,15 +49659,19 @@ unsafe extern "C" {
     pub fn SysCtrlAonUpdate();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SysCtrlSetRechargeBeforePowerDown"]
     pub fn SysCtrlSetRechargeBeforePowerDown(xoscPowerMode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SysCtrlAdjustRechargeAfterPowerDown"]
     pub fn SysCtrlAdjustRechargeAfterPowerDown(vddrRechargeMargin: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SysCtrl_DCDC_VoltageConditionalControl"]
     pub fn SysCtrl_DCDC_VoltageConditionalControl();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_SysCtrlResetSourceGet"]
     pub fn SysCtrlResetSourceGet() -> u32;
 }
 unsafe extern "C" {
@@ -49524,9 +49731,11 @@ unsafe extern "C" {
     pub fn TimerDisable(ui32Base: u32, ui32Timer: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerConfigure"]
     pub fn TimerConfigure(ui32Base: u32, ui32Config: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerLevelControl"]
     pub fn TimerLevelControl(ui32Base: u32, ui32Timer: u32, bInvert: bool);
 }
 unsafe extern "C" {
@@ -49534,9 +49743,11 @@ unsafe extern "C" {
     pub fn TimerEventControl(ui32Base: u32, ui32Timer: u32, ui32Event: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerStallControl"]
     pub fn TimerStallControl(ui32Base: u32, ui32Timer: u32, bStall: bool);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerWaitOnTriggerControl"]
     pub fn TimerWaitOnTriggerControl(ui32Base: u32, ui32Timer: u32, bWait: bool);
 }
 unsafe extern "C" {
@@ -49576,9 +49787,11 @@ unsafe extern "C" {
     pub fn TimerMatchGet(ui32Base: u32, ui32Timer: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerIntRegister"]
     pub fn TimerIntRegister(ui32Base: u32, ui32Timer: u32, pfnHandler: ::core::option::Option<unsafe extern "C" fn()>);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerIntUnregister"]
     pub fn TimerIntUnregister(ui32Base: u32, ui32Timer: u32);
 }
 unsafe extern "C" {
@@ -49610,12 +49823,15 @@ unsafe extern "C" {
     pub fn TimerCcpCombineDisable(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerMatchUpdateMode"]
     pub fn TimerMatchUpdateMode(ui32Base: u32, ui32Timer: u32, ui32Mode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TimerIntervalLoadMode"]
     pub fn TimerIntervalLoadMode(ui32Base: u32, ui32Timer: u32, ui32Mode: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TRNGConfigure"]
     pub fn TRNGConfigure(ui32MinSamplesPerCycle: u32, ui32MaxSamplesPerCycle: u32, ui32ClocksPerSample: u32);
 }
 unsafe extern "C" {
@@ -49627,6 +49843,7 @@ unsafe extern "C" {
     pub fn TRNGDisable();
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_TRNGNumberGet"]
     pub fn TRNGNumberGet(ui32Word: u32) -> u32;
 }
 unsafe extern "C" {
@@ -49674,12 +49891,15 @@ unsafe extern "C" {
     pub fn UARTFIFOLevelSet(ui32Base: u32, ui32TxLevel: u32, ui32RxLevel: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTFIFOLevelGet"]
     pub fn UARTFIFOLevelGet(ui32Base: u32, pui32TxLevel: *mut u32, pui32RxLevel: *mut u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTConfigSetExpClk"]
     pub fn UARTConfigSetExpClk(ui32Base: u32, ui32UARTClk: u32, ui32Baud: u32, ui32Config: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTConfigGetExpClk"]
     pub fn UARTConfigGetExpClk(ui32Base: u32, ui32UARTClk: u32, pui32Baud: *mut u32, pui32Config: *mut u32);
 }
 unsafe extern "C" {
@@ -49687,6 +49907,7 @@ unsafe extern "C" {
     pub fn UARTEnable(ui32Base: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTDisable"]
     pub fn UARTDisable(ui32Base: u32);
 }
 unsafe extern "C" {
@@ -49706,15 +49927,19 @@ unsafe extern "C" {
     pub fn UARTSpaceAvail(ui32Base: u32) -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTCharGetNonBlocking"]
     pub fn UARTCharGetNonBlocking(ui32Base: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTCharGet"]
     pub fn UARTCharGet(ui32Base: u32) -> i32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTCharPutNonBlocking"]
     pub fn UARTCharPutNonBlocking(ui32Base: u32, ui8Data: u8) -> bool;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTCharPut"]
     pub fn UARTCharPut(ui32Base: u32, ui8Data: u8);
 }
 unsafe extern "C" {
@@ -49726,9 +49951,11 @@ unsafe extern "C" {
     pub fn UARTBreakCtl(ui32Base: u32, bBreakState: bool);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTIntRegister"]
     pub fn UARTIntRegister(ui32Base: u32, pfnHandler: ::core::option::Option<unsafe extern "C" fn()>);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_UARTIntUnregister"]
     pub fn UARTIntUnregister(ui32Base: u32);
 }
 unsafe extern "C" {
@@ -49833,18 +50060,23 @@ unsafe extern "C" {
     pub fn uDMAChannelRequest(ui32Base: u32, ui32ChannelNum: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelAttributeEnable"]
     pub fn uDMAChannelAttributeEnable(ui32Base: u32, ui32ChannelNum: u32, ui32Attr: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelAttributeDisable"]
     pub fn uDMAChannelAttributeDisable(ui32Base: u32, ui32ChannelNum: u32, ui32Attr: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelAttributeGet"]
     pub fn uDMAChannelAttributeGet(ui32Base: u32, ui32ChannelNum: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelControlSet"]
     pub fn uDMAChannelControlSet(ui32Base: u32, ui32ChannelStructIndex: u32, ui32Control: u32);
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelTransferSet"]
     pub fn uDMAChannelTransferSet(
         ui32Base: u32,
         ui32ChannelStructIndex: u32,
@@ -49855,6 +50087,7 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelScatterGatherSet"]
     pub fn uDMAChannelScatterGatherSet(
         ui32Base: u32,
         ui32ChannelNum: u32,
@@ -49864,9 +50097,11 @@ unsafe extern "C" {
     );
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelSizeGet"]
     pub fn uDMAChannelSizeGet(ui32Base: u32, ui32ChannelStructIndex: u32) -> u32;
 }
 unsafe extern "C" {
+    #[link_name = "\u{1}NOROM_uDMAChannelModeGet"]
     pub fn uDMAChannelModeGet(ui32Base: u32, ui32ChannelStructIndex: u32) -> u32;
 }
 unsafe extern "C" {
