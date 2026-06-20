@@ -5,6 +5,9 @@ use core::marker::PhantomData;
 use crate::chip::interrupt;
 use crate::define_peri;
 use crate::driverlib;
+use crate::driverlib::UARTFIFOEnable;
+use crate::driverlib::{UARTDisable, UARTEnable};
+use crate::driverlib::{UARTHwFlowControlDisable, UARTHwFlowControlEnable};
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac;
 use crate::udma::UDMA;
@@ -41,7 +44,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            hw_flow_control: false,
+            hw_flow_control: true,
             baudrate: BAUD_RATE,
         }
     }
@@ -108,6 +111,7 @@ macro_rules! impl_uart {
     };
 }
 
+#[derive(Debug)]
 pub enum Error {
     /// Buffer was too long.
     BufferTooLong,
@@ -135,9 +139,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         // (e.g. reader) to check the error status, clear the status
         // and reenable error interrupts.
         if UART.ris.read().feris().bit_is_set() // Framing Error
-            || UART.ris.read().peris().bit_is_set() // Parity Error
-            || UART.ris.read().beris().bit_is_set() // Break Error
-            || UART.ris.read().oeris().bit_is_set()
+                    || UART.ris.read().peris().bit_is_set() // Parity Error
+                    || UART.ris.read().beris().bit_is_set() // Break Error
+                    || UART.ris.read().oeris().bit_is_set()
         // Overrun Error
         {
             UART.imsc.modify(|_r, w| {
@@ -203,14 +207,18 @@ pub enum FIFOFillLevel {
 }
 
 fn check_errors() -> Result<(), Error> {
-    if UART.rsr.read().fe().bit_is_set() {
-        Err(Error::Framing)
-    } else if UART.rsr.read().pe().bit_is_set() {
-        Err(Error::Parity)
-    } else if UART.rsr.read().be().bit_is_set() {
-        Err(Error::Break)
-    } else if UART.rsr.read().oe().bit_is_set() {
-        Err(Error::Overrun)
+    let rsr = UART.rsr.read();
+    if rsr.fe().bit_is_set() || rsr.pe().bit_is_set() || rsr.be().bit_is_set() || rsr.oe().bit_is_set() {
+        unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
+        if rsr.fe().bit_is_set() {
+            Err(Error::Framing)
+        } else if rsr.pe().bit_is_set() {
+            Err(Error::Parity)
+        } else if rsr.be().bit_is_set() {
+            Err(Error::Break)
+        } else {
+            Err(Error::Overrun)
+        }
     } else {
         Ok(())
     }
@@ -222,6 +230,9 @@ pub struct UartFullRx {
 
 impl UartFullRx {
     pub fn enable_rx_interrupts(&self, fill_level: FIFOFillLevel) {
+        // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
+        UartFull::disable_uart();
+
         match fill_level {
             FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_1_8)),
             FIFOFillLevel::Level28 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_2_8)),
@@ -232,7 +243,9 @@ impl UartFullRx {
         // Set interrupts:
         // - receive interrupt
         // - reception timeout interrupt
-        UART.imsc.modify(|_r, w| w.rxim().set_bit().rtim().set_bit())
+        UART.imsc.modify(|_r, w| w.rxim().set_bit().rtim().set_bit());
+
+        UartFull::enable_uart();
     }
 
     pub fn disable_rx_interrupts(&self) {
@@ -247,19 +260,22 @@ impl UartFullRx {
     }
 
     fn rx_fifo_empty(&self) -> bool {
-        UART.fr.read().rxff().bit_is_set()
+        UART.fr.read().rxfe().bit_is_set()
     }
 
     fn dma_start_rx(&self) {
         UART.dmactl.modify(|_r, w| w.rxdmae().set_bit());
     }
 
-    pub async fn read(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
-        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
+    pub async fn read(&self, buffer: &mut [u8], rx_len: usize) -> Result<(), Error> {
+        if rx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
         }
 
-        UDMA.uart_transfer_rx(&mut buffer[..tx_len]);
+        // Clear any pre-existing read errors.
+        unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
+
+        UDMA.uart_transfer_rx(&mut buffer[..rx_len]);
 
         compiler_fence(Ordering::SeqCst);
 
@@ -277,17 +293,21 @@ impl UartFullRx {
         })
         .await;
 
-        //compiler_fence(Ordering::SeqCst);
+        compiler_fence(Ordering::SeqCst);
 
-        //UDMA.uart_request_done_rx_clear();
+        UDMA.uart_request_done_rx_clear();
 
         result
     }
 
+    /// Same as read(), but instead of async polling it executes busy while() loop.
     pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
         if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
         }
+
+        // Clear any pre-existing read errors.
+        unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
 
         UDMA.uart_transfer_rx(&mut buffer[..tx_len]);
 
@@ -302,9 +322,9 @@ impl UartFullRx {
             }
         }
 
-        //compiler_fence(Ordering::SeqCst);
+        compiler_fence(Ordering::SeqCst);
 
-        //UDMA.uart_request_done_rx_clear();
+        UDMA.uart_request_done_rx_clear();
         Ok(())
     }
 }
@@ -315,6 +335,9 @@ pub struct UartFullTx {
 
 impl UartFullTx {
     pub fn enable_tx_interrupts(&self, fill_level: FIFOFillLevel) {
+        // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
+        UartFull::disable_uart();
+
         match fill_level {
             FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_1_8)),
             FIFOFillLevel::Level28 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_2_8)),
@@ -325,7 +348,9 @@ impl UartFullTx {
 
         // Set interrupts:
         // - transmit interrupt
-        UART.imsc.modify(|_r, w| w.txim().set_bit())
+        UART.imsc.modify(|_r, w| w.txim().set_bit());
+
+        UartFull::enable_uart();
     }
 
     pub fn disable_tx_interrupts(&self) {
@@ -353,24 +378,29 @@ impl UartFullTx {
 
         UDMA.uart_transfer_tx(&buffer[..tx_len]);
 
+        compiler_fence(Ordering::SeqCst);
+
         self.dma_start_tx();
 
         let result = poll_fn(|cx| {
-            self.state.rx_waker.register(cx.waker());
+            self.state.tx_waker.register(cx.waker());
             if let Err(e) = check_errors() {
                 UDMA.uart_disable_tx();
                 return Poll::Ready(Err(e));
-            } else if self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+            } else if self.state.tx_dma_finished.swap(false, Ordering::SeqCst) {
                 return Poll::Ready(Ok(()));
             }
             Poll::Pending
         })
         .await;
 
-        //        UDMA.uart_request_done_tx_clear();
+        compiler_fence(Ordering::SeqCst);
+
+        UDMA.uart_request_done_tx_clear();
         result
     }
 
+    /// Same as write(), but instead of async polling it executes busy while() loop.
     pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
         if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
@@ -389,9 +419,9 @@ impl UartFullTx {
             }
         }
 
-        //compiler_fence(Ordering::SeqCst);
+        compiler_fence(Ordering::SeqCst);
 
-        //UDMA.uart_request_done_tx_clear();
+        UDMA.uart_request_done_tx_clear();
         Ok(())
     }
 }
@@ -403,7 +433,6 @@ pub struct UartFull<'a> {
 }
 
 impl<'a> UartFull<'a> {
-    // This should only be constructed once
     pub fn new<T: Instance>(
         uart: Peri<'a, T>,
         config: Config,
@@ -413,37 +442,23 @@ impl<'a> UartFull<'a> {
     }
 
     fn new_inner<T: Instance>(_uart: Peri<'a, T>, config: Config) -> Self {
-        Self::initialize(config.clone());
+        Self::initialize::<Config>(config);
         let res = Self {
             rx: UartFullRx { state: T::state() },
             tx: UartFullTx { state: T::state() },
             _p: PhantomData,
         };
-        res.configure(config);
-        res.enable();
 
         T::Interrupt::unpend();
         unsafe { T::Interrupt::enable() };
         res
     }
 
-    /// The idea is that this is only called once per MCU reboot.
     #[inline]
-    fn initialize<PinCfg: UartPinConfig>(_pin_cfg: PinCfg) {
+    fn initialize<PinCfg: UartPinConfig>(config: Config) {
         UDMA.enable();
-        /*
-        // 2. Configure the IOC module to map UART signals to the correct GPIO pins.
-        // RF1.7_UART_RX EM -> DIO_2
-        peripherals
-            .IOC
-            .iocfg2
-            .modify(|_r, w| w.port_id().uart0_rx().ie().set_bit());
-        // RF1.9_UART_TX EM -> DIO_3
-        peripherals
-            .IOC
-            .iocfg3
-            .modify(|_r, w| w.port_id().uart0_tx().ie().clear_bit());
-        */
+
+        // Setup IO pins for UART0.
         unsafe {
             driverlib::IOCPinTypeUart(
                 driverlib::UART0_BASE,
@@ -454,88 +469,51 @@ impl<'a> UartFull<'a> {
             )
         };
 
-        /*
-        // For this example, the UART clock is assumed to be 24 MHz, and the desired UART configuration is:
-        // • Baud rate: 115 200
-        // • Data length of 8 bits
-        // • One stop bit
-        // • No parity
-        // • FIFOs disabled
-        // • No interrupts
-        //
-        // The first thing to consider when programming the UART is the BRD because the UART:IBRD and
-        // UART:FBRD registers must be written before the UART:LCRH register.
-        // The BRD can be calculated using the equation:
-        //      BRD = 24 000 000 / (16 × 115 200) = 13.0208
-        // The result of Equation 3 indicates that the UART:IBRD DIVINT field must be set to 13 decimal or 0xD.
-        //
-        // Equation 4 calculates the value to be loaded into the UART:FBRD register.
-        //      UART:FBRD.DIVFRAC = integer (0.0208 × 64 + 0.5) = 1
-        //
-        // With the BRD values available, the UART configuration is written to the module in the following order:
-        let uart = &peripherals.UART0;
+        // Disable UART0 before configuration, as per TI-TRM 19.4.
+        UartFull::disable_uart();
 
-        // 1. Disable the UART by clearing the UART:CTL UARTEN bit.
-        uart.ctl.modify(|_r, w| w.uarten().dis());
-
-        // 2. Write the integer portion of the BRD to the UART:IBRD register.
-        // uart.ibrd.modify(|_r, w| unsafe { w.divint().bits(13) });
-        uart.ibrd.modify(|_r, w| unsafe { w.divint().bits(26) }); // for 48 MHz
-
-        // 3. Write the fractional portion of the BRD to the UART:FBRD register.
-        // uart.fbrd.modify(|_r, w| unsafe { w.divfrac().bits(1) });
-        uart.fbrd.modify(|_r, w| unsafe { w.divfrac().bits(3) }); // for 48 MHz
-
-        // 4. Write the desired serial parameters to the UART:LCRH register (in this case, a value of 0x0000 0060).
-        uart.lcrh.modify(|_r, w| w.pen().dis().wlen()._8());
-
-        // 5. Enable the UART by setting the UART:CTL UARTEN bit.
-        uart.ctl
-            .modify(|_r, w| w.uarten().en().txe().en().rxe().en());
-        */
-
+        // Setup UART
         unsafe {
             driverlib::UARTConfigSetExpClk(
                 driverlib::UART0_BASE,
                 CLOCK_FREQ,
-                BAUD_RATE,
+                config.baudrate,
                 driverlib::UART_CONFIG_PAR_NONE | driverlib::UART_CONFIG_STOP_ONE | driverlib::UART_CONFIG_WLEN_8,
             )
         };
 
+        // Enable FIFO. No interrupts configured as UDMA handles comms.
+        unsafe {
+            UARTFIFOEnable(driverlib::UART0_BASE);
+        };
+
+        unsafe {
+            match config.hw_flow_control {
+                true => UARTHwFlowControlEnable(driverlib::UART0_BASE),
+                false => UARTHwFlowControlDisable(driverlib::UART0_BASE),
+            };
+        }
+
+        // Configure channels used for data requests by UART0.
         UDMA.uart_channels_configure();
-    }
 
-    fn configure(&self, config: Config) {
-        self.set_hw_flow_control(config.hw_flow_control);
-        self.set_baud_rate(config.baudrate);
-    }
-
-    fn set_baud_rate(&self, baud_rate: u32) {
-        let div = (((CLOCK_FREQ * 8) / baud_rate) + 1) / 2;
-        UART.ibrd
-            .write(|w| unsafe { w.divint().bits((div / 64).try_into().unwrap()) });
-        UART.fbrd
-            .write(|w| unsafe { w.divfrac().bits((div % 64).try_into().unwrap()) })
-    }
-
-    fn set_hw_flow_control(&self, on: bool) {
-        UART.ctl.modify(|_r, w| w.ctsen().bit(on).rtsen().bit(on));
-    }
-
-    /// The idea is that this is run each time System CPU stops deep sleep.
-    fn enable(&self) {
-        // Disable, because they should be enabled only upon a transfer/receive request.
+        // UART uDMA transactions should be only enabled when an actual transmission happens.
         UDMA.uart_disable_tx();
         UDMA.uart_disable_rx();
-        // UARTEnable is static inline, so better use our own version.
-        // unsafe { driverlib::UARTEnable(driverlib::UART0_BASE) }
 
-        // Enable the FIFO.
-        UART.lcrh.modify(|_r, w| w.fen().en());
+        UartFull::enable_uart();
+    }
 
-        // Enable RX, TX, and the UART.
-        UART.ctl.modify(|_r, w| w.uarten().en().txe().en().rxe().en());
+    fn enable_uart() {
+        unsafe {
+            UARTEnable(driverlib::UART0_BASE);
+        };
+    }
+
+    fn disable_uart() {
+        unsafe {
+            UARTDisable(driverlib::UART0_BASE);
+        };
     }
 
     pub fn split(self) -> (UartFullTx, UartFullRx) {
@@ -594,6 +572,7 @@ impl<'a> UartFull<'a> {
         self.rx.read(buffer, tx_len).await
     }
 
+    /// Same as read(), but instead of async polling it executes busy while() loop.
     pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
         self.rx.read_blocking(buffer, tx_len)
     }
@@ -602,6 +581,7 @@ impl<'a> UartFull<'a> {
         self.tx.write(buffer, tx_len).await
     }
 
+    /// Same as write(), but instead of async polling it executes busy while() loop.
     pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
         self.tx.write_blocking(buffer, tx_len)
     }
