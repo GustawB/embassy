@@ -11,16 +11,22 @@ bind_interrupts!(struct Irqs {
     UART0 => uart::InterruptHandler<peripherals::UART0>;
 });
 
+const CHUNK_SIZE: usize = 16;
+const BAUDRATE: u32 = 230400;
+
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
-    let config = Config::default();
+    let mut config = Config::default();
+    config.baudrate = BAUDRATE;
     let uart = UartFull::new(p.UART0, config, Irqs);
 
-    let mut buf = [0; 8];
+    let mut buf = [0; CHUNK_SIZE];
     let (tx, rx) = uart.split();
     loop {
-        rx.read(&mut buf, 8).await.unwrap();
-        tx.write(&buf, 8).await.unwrap();
+        // uart.read(&mut buf, CHUNK_SIZE).await.unwrap();
+        // uart.write(&buf, CHUNK_SIZE).await.unwrap();
+        rx.read(&mut buf, CHUNK_SIZE).await.unwrap();
+        tx.write(&buf, CHUNK_SIZE).await.unwrap();
     }
 }

@@ -5,6 +5,7 @@ use core::marker::PhantomData;
 use crate::chip::interrupt;
 use crate::define_peri;
 use crate::driverlib;
+use crate::driverlib::SysCtrlClockGet;
 use crate::driverlib::UARTFIFOEnable;
 use crate::driverlib::{UARTDisable, UARTEnable};
 use crate::driverlib::{UARTHwFlowControlDisable, UARTHwFlowControlEnable};
@@ -18,9 +19,6 @@ use core::task::Poll;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
-
-const CLOCK_FREQ: u32 = 48_000_000;
-pub const BAUD_RATE: u32 = 115_200;
 
 // 1073745920 is the start address of registers for UART0.
 // cc2650 crate calls it RegisterBlock; I took this
@@ -45,7 +43,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             hw_flow_control: true,
-            baudrate: BAUD_RATE,
+            baudrate: 115_200,
         }
     }
 }
@@ -476,7 +474,7 @@ impl<'a> UartFull<'a> {
         unsafe {
             driverlib::UARTConfigSetExpClk(
                 driverlib::UART0_BASE,
-                CLOCK_FREQ,
+                SysCtrlClockGet(),
                 config.baudrate,
                 driverlib::UART_CONFIG_PAR_NONE | driverlib::UART_CONFIG_STOP_ONE | driverlib::UART_CONFIG_WLEN_8,
             )
