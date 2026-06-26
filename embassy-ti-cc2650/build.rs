@@ -296,8 +296,7 @@ impl DriverlibBuilder {
         assert!(status.success(), "ld extracting symbols to rom_symbols.o failed");
 
         let status = Command::new("llvm-ar")
-            .arg("rb")
-            .arg("adi.o")
+            .arg("rcs")
             .arg(&self.lib_norom_original_path)
             .arg(&rom_symbols_o_path)
             .arg(&self.extern_o_path)
