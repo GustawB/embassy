@@ -219,23 +219,46 @@ impl DriverlibBuilder {
     }
 
     fn compile_static_inline_extern_fns(&self) {
-        let extern_o_path = cc::Build::new()
+        let extern_bc_path = cc::Build::new()
             .compiler("clang")
             .file(&self.extern_c_path)
             .warnings(false)
-            .define("__GNUC__", None)
             .include(self.newlib_inc_path.as_str())
             .include(&self.driverlib_includes)
             .include(".")
+            .flag("-flto=thin")
+            .flag("-mthumb")
+            .flag("-mabi=aapcs")
+            .flag("-mlittle-endian")
+            .flag("-Wall")
+            .flag("-std=c11")
             .flag("-ffunction-sections")
             .flag("-fdata-sections")
+            .flag("-fno-strict-aliasing")
+            .flag("-fshort-enums")
+            .flag("-fomit-frame-pointer")
+            .flag("-ggdb3")
+            .flag("-gz")
             .cargo_metadata(false)
             .compile_intermediates()
             .into_iter()
             .next()
             .unwrap();
 
-        std::fs::copy(&extern_o_path, &self.extern_o_path).expect("Failed to copy extern.o");
+        // llc --filetype obj blahblah-extern.o -o extern.o
+        let status = Command::new("llc")
+            .arg("--filetype")
+            .arg("obj")
+            .arg("--function-sections")
+            .arg("--data-sections")
+            .arg(&extern_bc_path)
+            .arg("-o")
+            .arg(&self.extern_o_path)
+            .spawn()
+            .unwrap()
+            .wait()
+            .unwrap();
+        assert!(status.success(), "extern.o llc failed");
     }
 
     fn merge_lib(&self) {
@@ -250,19 +273,18 @@ impl DriverlibBuilder {
         let rom_symbols_o_path = self.out.join("rom_symbols.o");
 
         // Create empty REL ELF
-        // arm-none-eabi-gcc -c empty.c -o empty.o
-        let status = Command::new("arm-none-eabi-gcc")
+        let status = Command::new("clang")
+            .arg("--target=thumbv7m-none-eabi")
             .arg("-c")
             .arg(&empty_c_path)
             .arg("-o")
             .arg(&empty_o_path)
             .status()
             .unwrap();
-        assert!(status.success(), "gcc compiling empty.c failed");
+        assert!(status.success(), "clang compiling empty.c failed");
 
         // Extract ROM symbols to the empty REL ELF
-        // arm-none-eabi-ld --relocatable --just-symbols libROM_driverlib_global.elf empty.o -o rom_symbols.o
-        let status = Command::new("arm-none-eabi-ld")
+        let status = Command::new("ld.lld")
             .arg("--relocatable")
             .arg("--just-symbols")
             .arg(&self.lib_rom_filtered_path)
@@ -273,7 +295,7 @@ impl DriverlibBuilder {
             .unwrap();
         assert!(status.success(), "ld extracting symbols to rom_symbols.o failed");
 
-        let status = Command::new("ar")
+        let status = Command::new("llvm-ar")
             .arg("rb")
             .arg("adi.o")
             .arg(&self.lib_norom_original_path)
@@ -281,18 +303,18 @@ impl DriverlibBuilder {
             .arg(&self.extern_o_path)
             .status()
             .unwrap();
-        assert!(status.success(), "merge driverlib ar failed");
+        assert!(status.success(), "merge driverlib llvm-ar failed");
 
         // Copy lib to the path expected by the linker.
         std::fs::copy(&self.lib_norom_original_path, self.out.join(LIB_NOROM_FINAL))
-            .expect("Falied to copy library to th efinal location.");
+            .expect("Falied to copy library to the final location.");
     }
 
     // Strips those functions from ROM symbols ELF, which are disabled in rom.h.
     fn strip_disabled_rom_fns(&self) {
         get_enabled_rom_fns(&self.driverlib_sources, &self.enabled_rom_fns_path);
 
-        let status = Command::new("arm-none-eabi-objcopy")
+        let status = Command::new("llvm-objcopy")
             .arg(format!(
                 "--keep-global-symbols={}",
                 self.enabled_rom_fns_path.to_str().unwrap()
@@ -328,6 +350,9 @@ impl DriverlibBuilder {
             "FlashProtectionGet",
             "UARTDisable",
             "VIMSModeSet",
+            "IntEnable",
+            "IntDisable",
+            "",
         ];
 
         let symbols = std::fs::read_to_string(&self.enabled_rom_fns_path).unwrap();
@@ -336,7 +361,7 @@ impl DriverlibBuilder {
             .map(str::trim)
             .filter(|symbol| !EXCLUDED.contains(symbol))
         {
-            let status = Command::new("arm-none-eabi-objcopy")
+            let status = Command::new("llvm-objcopy")
                 .arg("--strip-symbol")
                 .arg(symbol)
                 .arg(&self.lib_norom_original_path)
