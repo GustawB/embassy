@@ -1,6 +1,8 @@
 #![macro_use]
 
 use core::marker::PhantomData;
+use core::sync::atomic::AtomicUsize;
+use core::usize;
 
 use crate::chip::interrupt;
 use crate::define_peri;
@@ -14,7 +16,7 @@ use crate::pac;
 use crate::udma::UDMA;
 use cc2650::uart0::ifls::{RXSELW, TXSELW};
 use core::future::poll_fn;
-use core::sync::atomic::{AtomicBool, Ordering, compiler_fence};
+use core::sync::atomic::{Ordering, compiler_fence};
 use core::task::Poll;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
@@ -69,8 +71,10 @@ impl UartPinConfig for Config {
 pub(crate) struct State {
     pub(crate) rx_waker: AtomicWaker,
     pub(crate) tx_waker: AtomicWaker,
-    pub(crate) rx_dma_finished: AtomicBool,
-    pub(crate) tx_dma_finished: AtomicBool,
+    // irq handler will set this to the final destination address of the uDMA transfer;
+    // Because read() increments the destination ptr, this can be used to get the amount
+    // of data read (which comes in handy e.g. on read timeout irq).
+    pub(crate) rx_incremented_addr: AtomicUsize,
 }
 
 impl State {
@@ -78,8 +82,7 @@ impl State {
         Self {
             rx_waker: AtomicWaker::new(),
             tx_waker: AtomicWaker::new(),
-            rx_dma_finished: AtomicBool::new(false),
-            tx_dma_finished: AtomicBool::new(false),
+            rx_incremented_addr: AtomicUsize::new(0),
         }
     }
 }
@@ -132,27 +135,8 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     unsafe fn on_interrupt() {
         let s = T::state();
 
-        // If an error happened, mask the error interrupts,
-        // BUT don't clear the RSR/ECR; it is up to the poller
-        // (e.g. reader) to check the error status, clear the status
-        // and reenable error interrupts.
-        if UART.ris.read().feris().bit_is_set() // Framing Error
-                    || UART.ris.read().peris().bit_is_set() // Parity Error
-                    || UART.ris.read().beris().bit_is_set() // Break Error
-                    || UART.ris.read().oeris().bit_is_set()
-        // Overrun Error
-        {
-            UART.imsc.modify(|_r, w| {
-                w.oeim()
-                    .clear_bit() // Mask Overrun Error
-                    .beim()
-                    .clear_bit() // Mask Break Error
-                    .peim()
-                    .clear_bit() // Mask Parity Error
-                    .feim()
-                    .clear_bit() // Mask Framing Error
-            });
-        }
+        // Masked Interrupt Status
+        let mis = UART.mis.read();
 
         // clear interrupt flags
         UART.icr.write(|w| {
@@ -174,18 +158,45 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                 .set_bit()
         });
 
+        // If an error happened, mask the error interrupts,
+        // BUT don't clear the RSR/ECR; it is up to the poller
+        // (e.g. reader) to check the error status, clear the status
+        // and reenable error interrupts.
+        if mis.femis().bit_is_set() // Framing Error
+                    || mis.pemis().bit_is_set() // Parity Error
+                    || mis.bemis().bit_is_set() // Break Error
+                    || mis.oemis().bit_is_set()
+        // Overrun Error
+        {
+            UART.imsc.modify(|_r, w| {
+                w.oeim()
+                    .clear_bit() // Mask Overrun Error
+                    .beim()
+                    .clear_bit() // Mask Break Error
+                    .peim()
+                    .clear_bit() // Mask Parity Error
+                    .feim()
+                    .clear_bit() // Mask Framing Error
+            });
+        }
+
+        // UART write complete.
         if UDMA.uart_request_done_tx() {
-            UDMA.uart_request_done_tx_clear();
             UDMA.uart_disable_tx();
+            UDMA.uart_request_done_tx_mask();
             UART.dmactl.modify(|_r, w| w.txdmae().clear_bit());
-            s.tx_dma_finished.store(true, Ordering::SeqCst);
             s.tx_waker.wake();
         }
+        // UART read complete.
+        // NOTE: For now, timeouts doesnt work.
         if UDMA.uart_request_done_rx() {
-            UDMA.uart_request_done_rx_clear();
             UDMA.uart_disable_rx();
+            UDMA.uart_request_done_rx_mask();
             UART.dmactl.modify(|_r, w| w.rxdmae().clear_bit());
-            s.rx_dma_finished.store(true, Ordering::SeqCst);
+            let incremented_addr = UDMA.uart_dest_addr_rx_get() as usize;
+
+            s.rx_incremented_addr.store(incremented_addr, Ordering::Release);
+
             s.rx_waker.wake();
         }
     }
@@ -265,7 +276,7 @@ impl UartFullRx {
         UART.dmactl.modify(|_r, w| w.rxdmae().set_bit());
     }
 
-    pub async fn read(&self, buffer: &mut [u8], rx_len: usize) -> Result<(), Error> {
+    pub async fn read(&self, buffer: &mut [u8], rx_len: usize) -> Result<usize, Error> {
         if rx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
         }
@@ -284,7 +295,7 @@ impl UartFullRx {
             if let Err(e) = check_errors() {
                 UDMA.uart_disable_rx();
                 return Poll::Ready(Err(e));
-            } else if self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+            } else if UDMA.uart_request_done_rx() {
                 return Poll::Ready(Ok(()));
             }
             Poll::Pending
@@ -294,12 +305,18 @@ impl UartFullRx {
         compiler_fence(Ordering::SeqCst);
 
         UDMA.uart_request_done_rx_clear();
+        UDMA.uart_request_done_rx_unmask();
 
-        result
+        let dma_stop_addr = self.state.rx_incremented_addr.swap(0, Ordering::Acquire);
+        let buffer_base_ptr = buffer.as_ptr() as usize;
+        match result {
+            Ok(_) => Ok(dma_stop_addr.saturating_add(1).saturating_sub(buffer_base_ptr)),
+            Err(err) => Err(err),
+        }
     }
 
     /// Same as read(), but instead of async polling it executes busy while() loop.
-    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
+    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<usize, Error> {
         if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(Error::BufferTooLong);
         }
@@ -313,7 +330,7 @@ impl UartFullRx {
 
         self.dma_start_rx();
 
-        while !self.state.rx_dma_finished.swap(false, Ordering::SeqCst) {
+        while !UDMA.uart_request_done_rx() {
             if let Err(e) = check_errors() {
                 UDMA.uart_disable_rx();
                 return Err(e);
@@ -323,7 +340,12 @@ impl UartFullRx {
         compiler_fence(Ordering::SeqCst);
 
         UDMA.uart_request_done_rx_clear();
-        Ok(())
+        UDMA.uart_request_done_rx_unmask();
+
+        let dma_stop_addr = self.state.rx_incremented_addr.swap(0, Ordering::Acquire);
+        let buffer_base_ptr = buffer.as_ptr() as usize;
+
+        Ok(dma_stop_addr.saturating_add(1).saturating_sub(buffer_base_ptr))
     }
 }
 
@@ -385,7 +407,7 @@ impl UartFullTx {
             if let Err(e) = check_errors() {
                 UDMA.uart_disable_tx();
                 return Poll::Ready(Err(e));
-            } else if self.state.tx_dma_finished.swap(false, Ordering::SeqCst) {
+            } else if UDMA.uart_request_done_tx() {
                 return Poll::Ready(Ok(()));
             }
             Poll::Pending
@@ -395,6 +417,7 @@ impl UartFullTx {
         compiler_fence(Ordering::SeqCst);
 
         UDMA.uart_request_done_tx_clear();
+        UDMA.uart_request_done_tx_unmask();
         result
     }
 
@@ -410,7 +433,7 @@ impl UartFullTx {
 
         self.dma_start_tx();
 
-        while !self.state.tx_dma_finished.swap(false, Ordering::SeqCst) {
+        while !UDMA.uart_request_done_tx() {
             if let Err(e) = check_errors() {
                 UDMA.uart_disable_tx();
                 return Err(e);
@@ -420,6 +443,7 @@ impl UartFullTx {
         compiler_fence(Ordering::SeqCst);
 
         UDMA.uart_request_done_tx_clear();
+        UDMA.uart_request_done_tx_unmask();
         Ok(())
     }
 }
@@ -467,10 +491,7 @@ impl<'a> UartFull<'a> {
             )
         };
 
-        // Disable UART0 before configuration, as per TI-TRM 19.4.
-        UartFull::disable_uart();
-
-        // Setup UART
+        // Setup UART. This also disables UART0, as required by TI-TRM 19.4.
         unsafe {
             driverlib::UARTConfigSetExpClk(
                 driverlib::UART0_BASE,
@@ -566,12 +587,12 @@ impl<'a> UartFull<'a> {
         self.rx.rx_fifo_full()
     }
 
-    pub async fn read(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
+    pub async fn read(&self, buffer: &mut [u8], tx_len: usize) -> Result<usize, Error> {
         self.rx.read(buffer, tx_len).await
     }
 
     /// Same as read(), but instead of async polling it executes busy while() loop.
-    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<(), Error> {
+    pub fn read_blocking(&self, buffer: &mut [u8], tx_len: usize) -> Result<usize, Error> {
         self.rx.read_blocking(buffer, tx_len)
     }
 

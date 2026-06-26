@@ -10,6 +10,7 @@
 //! - DMA generates interrupts for peripherals, so their own interrupt triggers should be turned off
 //!   if DMA is in use.
 
+use core::u32;
 use core::{ffi::c_void, marker::PhantomData, ptr::addr_of};
 
 use crate::define_peri;
@@ -143,11 +144,47 @@ impl Udma {
     }
 
     #[inline]
+    pub(crate) fn uart_request_done_rx_mask(&self) {
+        unsafe {
+            static_mut_ref!(CHANNEL_CONTROL_MAP)
+                .primary_channel_1
+                .request_done_mask()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn uart_request_done_rx_unmask(&self) {
+        unsafe {
+            static_mut_ref!(CHANNEL_CONTROL_MAP)
+                .primary_channel_1
+                .request_done_unmask()
+        }
+    }
+
+    #[inline]
     pub(crate) fn uart_request_done_rx_clear(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
                 .primary_channel_1
                 .request_done_clear()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn uart_request_done_tx_mask(&self) {
+        unsafe {
+            static_mut_ref!(CHANNEL_CONTROL_MAP)
+                .primary_channel_2
+                .request_done_mask()
+        }
+    }
+
+    #[inline]
+    pub(crate) fn uart_request_done_tx_unmask(&self) {
+        unsafe {
+            static_mut_ref!(CHANNEL_CONTROL_MAP)
+                .primary_channel_2
+                .request_done_unmask()
         }
     }
 
@@ -158,6 +195,12 @@ impl Udma {
                 .primary_channel_2
                 .request_done_clear()
         }
+    }
+
+    #[inline]
+    // Safety: use only when uDMA rx disabled.
+    pub(crate) fn uart_dest_addr_rx_get(&self) -> u32 {
+        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.dest_end_ptr }
     }
 }
 
@@ -263,6 +306,18 @@ impl<const INDEX: u32> ChannelControlEntry<Primary, INDEX> {
 
     fn request_done_clear(&self) {
         IUDMA.reqdone.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+    }
+
+    fn request_done_mask(&self) {
+        IUDMA
+            .donemask
+            .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() | (1 << INDEX)) })
+    }
+
+    fn request_done_unmask(&self) {
+        IUDMA
+            .donemask
+            .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() & !(1 << INDEX)) })
     }
 }
 
