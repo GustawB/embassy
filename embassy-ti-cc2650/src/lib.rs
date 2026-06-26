@@ -80,7 +80,7 @@ const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
             impl Deref for $name {
                 type Target = pac::$cc2650_crate::RegisterBlock;
 
-                // self.0 is an address of the start of the specific peripheral's registers.
+                // SAFETY: self.0 is an address of the start of the specific peripheral's registers.
                 // It should be taken from the cc2650 crate directly, as this crate wraps
                 // this address into RegisterBlock. As a result, as long as the addres is taken
                 // from the cc2650 crate and binded to the correct peripheral from this crate,
@@ -102,10 +102,6 @@ pub fn init() -> Peripherals {
     let peripherals = pac::Peripherals::take().unwrap();
     let prcm = Prcm::new(peripherals.PRCM);
 
-    prcm.disable_domains(prcm::PowerDomains::empty().rfc());
-
-    // Now, with RFC disabled, configure MODESEL to mode that is appropriate for CC2650
-    // (other similar chips use different modes).
     prcm.rfc_modesel_configure();
 
     prcm.enable_domains(prcm::PowerDomains::empty().peripherals().serial());

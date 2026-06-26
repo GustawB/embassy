@@ -112,37 +112,40 @@ pub trait Pin: PeripheralType + Into<AnyPin> + SealedPin + Sized + 'static {
 
 pub(crate) struct GPIOPin<'d> {
     pin: Peri<'d, AnyPin>,
-    pin_mask: u32,
 }
 
 impl<'d> GPIOPin<'d> {
     fn new(pin: Peri<'d, impl Pin>) -> Self {
-        let any_pin = pin.into();
-        let pin_mask = 1 << any_pin.pin();
-        Self { pin: any_pin, pin_mask }
+        Self { pin: pin.into() }
+    }
+
+    fn pin_mask(&self) -> u32 {
+        1 << self.pin.pin()
     }
 
     fn make_input(&mut self, mode: Pull) {
-        self.enable_gpio();
-        self.enable_input();
+        unsafe {
+            driverlib::IOCPinTypeGpioInput(self.pin.pin());
+        }
         self.set_floating_state(mode);
     }
 
     fn make_output(&mut self) {
-        self.enable_gpio();
-        self.enable_output();
+        unsafe {
+            driverlib::IOCPinTypeGpioOutput(self.pin.pin());
+        }
     }
 
     fn set_high(&self) {
-        GPIO.doutset31_0.write(|w| unsafe { w.bits(self.pin_mask) });
+        GPIO.doutset31_0.write(|w| unsafe { w.bits(self.pin_mask()) });
     }
 
     fn set_low(&self) {
-        GPIO.doutclr31_0.write(|w| unsafe { w.bits(self.pin_mask) });
+        GPIO.doutclr31_0.write(|w| unsafe { w.bits(self.pin_mask()) });
     }
 
     fn is_set_high(&self) -> bool {
-        GPIO.dout31_0.read().bits() & self.pin_mask != 0
+        GPIO.dout31_0.read().bits() & self.pin_mask() != 0
     }
 
     fn is_set_low(&self) -> bool {
@@ -150,36 +153,14 @@ impl<'d> GPIOPin<'d> {
     }
 
     fn is_high(&self) -> bool {
-        GPIO.din31_0.read().bits() & self.pin_mask != 0
+        GPIO.din31_0.read().bits() & self.pin_mask() != 0
     }
 
     fn is_low(&self) -> bool {
         !self.is_high()
     }
 
-    fn enable_gpio(&self) {
-        // Driverlib is better here: cc2650 crate requires either matching over 32 options or a lot of unsafe.
-        // OTOH both IOCPortConfigure{G,S}et are present in ROM.
-        let pin_config = unsafe { driverlib::IOCPortConfigureGet(self.pin.pin()) };
-        unsafe { driverlib::IOCPortConfigureSet(self.pin.pin(), driverlib::IOC_PORT_GPIO, pin_config) };
-    }
-
-    fn enable_output(&self) {
-        //self.set_floating_state(Pull::None);
-        // unsafe { driverlib::GPIO_setOutputEnableDio(self.pin, driverlib::GPIO_OUTPUT_ENABLE) };
-        GPIO.doe31_0.modify(|_r, w| unsafe { w.bits(self.pin_mask) });
-    }
-
-    fn enable_input(&self) {
-        // Driverlib is better here: cc2650 crate requires either matching over 32 options or a lot of unsafe.
-        // OTOH both IOCPortConfigure{G,S}et are present in ROM.
-        unsafe {
-            driverlib::IOCIOInputSet(self.pin.pin(), driverlib::IOC_PORT_GPIO);
-        };
-    }
-
     fn set_floating_state(&self, mode: Pull) {
-        // Driverlib is better here: IOCIOPortPullSet is present in ROM.
         let mode = match mode {
             Pull::Down => driverlib::IOC_IOPULL_DOWN,
             Pull::Up => driverlib::IOC_IOPULL_UP,

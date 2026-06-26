@@ -7,12 +7,9 @@ enum PowerDomain {
     Rfc = driverlib::PRCM_DOMAIN_RFCORE,
     Serial = driverlib::PRCM_DOMAIN_SERIAL,
     Peripherals = driverlib::PRCM_DOMAIN_PERIPH,
-    Sysbus = driverlib::PRCM_DOMAIN_SYSBUS,
     Vims = driverlib::PRCM_DOMAIN_VIMS,
+    Sysbus = driverlib::PRCM_DOMAIN_SYSBUS,
     Cpu = driverlib::PRCM_DOMAIN_CPU,
-    Timer = driverlib::PRCM_DOMAIN_TIMER,
-    Clkctrl = driverlib::PRCM_DOMAIN_CLKCTRL,
-    Mcu = driverlib::PRCM_DOMAIN_MCU,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -35,41 +32,20 @@ impl PowerDomains {
         Self(self.0 | PowerDomain::Peripherals as u32)
     }
 
-    pub const fn sysbus(&self) -> Self {
-        Self(self.0 | PowerDomain::Sysbus as u32)
-    }
-
     pub const fn vims(self) -> Self {
         Self(self.0 | PowerDomain::Vims as u32)
+    }
+
+    pub const fn sysbus(&self) -> Self {
+        Self(self.0 | PowerDomain::Sysbus as u32)
     }
 
     pub const fn cpu(self) -> Self {
         Self(self.0 | PowerDomain::Cpu as u32)
     }
 
-    pub const fn timer(self) -> Self {
-        Self(self.0 | PowerDomain::Timer as u32)
-    }
-
-    pub const fn clkctrl(self) -> Self {
-        Self(self.0 | PowerDomain::Clkctrl as u32)
-    }
-
-    pub const fn mcu(self) -> Self {
-        Self(self.0 | PowerDomain::Mcu as u32)
-    }
-
     pub const fn all() -> Self {
-        Self::empty()
-            .rfc()
-            .serial()
-            .sysbus()
-            .peripherals()
-            .vims()
-            .cpu()
-            .timer()
-            .clkctrl()
-            .mcu()
+        Self::empty().rfc().serial().peripherals().sysbus().vims().cpu()
     }
 }
 
