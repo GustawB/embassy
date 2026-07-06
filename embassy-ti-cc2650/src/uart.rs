@@ -145,6 +145,18 @@ pub enum Error {
     Break,
 }
 
+fn enable_uart_irqs(flags: u32) {
+    unsafe {
+        driverlib::UARTIntEnable(driverlib::UART0_BASE, flags);
+    }
+}
+
+fn disable_uart_irqs(flags: u32) {
+    unsafe {
+        driverlib::UARTIntDisable(driverlib::UART0_BASE, flags);
+    }
+}
+
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
     _phantom: PhantomData<T>,
@@ -187,16 +199,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                     || mis.oemis().bit_is_set()
         // Overrun Error
         {
-            UART.imsc.modify(|_r, w| {
-                w.oeim()
-                    .clear_bit() // Mask Overrun Error
-                    .beim()
-                    .clear_bit() // Mask Break Error
-                    .peim()
-                    .clear_bit() // Mask Parity Error
-                    .feim()
-                    .clear_bit() // Mask Framing Error
-            });
+            disable_uart_irqs(
+                driverlib::UART_INT_OE | driverlib::UART_INT_BE | driverlib::UART_INT_PE | driverlib::UART_INT_FE,
+            );
         }
 
         // UART write complete.
@@ -210,9 +215,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         if mis.rxmis().bit_is_set() || mis.rtmis().bit_is_set() {
             // Mask RX and RT irqs. They should be unmasked by the reader
             // when he ends reading data from the FIFO (e.g. when there is no more data in FIFO).
-            unsafe {
-                driverlib::UARTIntDisable(driverlib::UART0_BASE, driverlib::UART_INT_RX | driverlib::UART_INT_RT);
-            }
+            disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
             s.rx_waker.wake();
         }
     }
@@ -222,6 +225,10 @@ fn check_errors() -> Result<(), Error> {
     let rsr = UART.rsr.read();
     if rsr.fe().bit_is_set() || rsr.pe().bit_is_set() || rsr.be().bit_is_set() || rsr.oe().bit_is_set() {
         unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
+        enable_uart_irqs(
+            driverlib::UART_INT_OE | driverlib::UART_INT_BE | driverlib::UART_INT_PE | driverlib::UART_INT_FE,
+        );
+
         if rsr.fe().bit_is_set() {
             Err(Error::Framing)
         } else if rsr.pe().bit_is_set() {
@@ -303,9 +310,7 @@ impl<'d> UartFullRxRunner<'d> {
             }
 
             // There is no more data, so reenable RX/RT irqs and repeat the loop.
-            unsafe {
-                driverlib::UARTIntEnable(driverlib::UART0_BASE, driverlib::UART_INT_RX | driverlib::UART_INT_RT);
-            }
+            enable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
         }
     }
 }
@@ -322,7 +327,7 @@ impl UartFullTx {
         match fill_level {
             FIFOFillLevel::Disabled => {
                 // Disable tx interrupt.
-                UART.imsc.modify(|_r, w| w.txim().clear_bit());
+                disable_uart_irqs(driverlib::UART_INT_TX);
                 UartFull::enable_uart();
                 return;
             }
@@ -333,9 +338,8 @@ impl UartFullTx {
             FIFOFillLevel::Level78 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_7_8)),
         };
 
-        // Set interrupts:
-        // - transmit interrupt
-        UART.imsc.modify(|_r, w| w.txim().set_bit());
+        // Enable transmit interrupt
+        enable_uart_irqs(driverlib::UART_INT_TX);
 
         UartFull::enable_uart();
     }
@@ -491,8 +495,11 @@ impl<'a> UartFull<'a> {
             FIFOFillLevel::Level78 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_7_8)),
         };
         if !disabled {
-            UART.imsc.modify(|_r, w| w.rxim().set_bit().rtim().set_bit());
+            enable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
         }
+
+        // Disable clear-to-send irq as uDMA handles TX.
+        disable_uart_irqs(driverlib::UART_INT_CTS);
 
         unsafe {
             match config.hw_flow_control {
@@ -537,7 +544,7 @@ impl<'a> UartFull<'a> {
                 // Disable interrupts:
                 // - receive interrupt
                 // - reception timeout interrupt
-                UART.imsc.modify(|_r, w| w.rxim().clear_bit().rtim().clear_bit());
+                disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
                 UartFull::enable_uart();
                 return;
             }
@@ -550,7 +557,7 @@ impl<'a> UartFull<'a> {
         // Set interrupts:
         // - receive interrupt
         // - reception timeout interrupt
-        UART.imsc.modify(|_r, w| w.rxim().set_bit().rtim().set_bit());
+        enable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
 
         UartFull::enable_uart();
     }
