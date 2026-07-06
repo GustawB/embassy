@@ -53,6 +53,7 @@ struct DriverlibBuilder {
     driverlib_sources: PathBuf,
     driverlib_includes: PathBuf,
     lib_norom_original_path: PathBuf,
+    lib_norom_work_path: PathBuf,
     lib_rom_original_path: PathBuf,
     lib_rom_filtered_path: PathBuf,
     extern_c_path: PathBuf,
@@ -71,6 +72,7 @@ impl DriverlibBuilder {
         let cc2650_crate_driverlib_includes = cc2650_crate_driverlib_root.join(DRIVERLIB_INCLUDES);
 
         let lib_norom_original_path = cc2650_crate_driverlib_root.join(LIB_NOROM_ORIGINAL);
+        let lib_norom_work_path = out.join("driverlib_work.lib");
         let lib_rom_original_path = cc2650_crate_driverlib_root.join(LIB_ROM_ORIGINAL);
         let lib_rom_filtered_path = out.join(LIB_ROM_FILTERED);
         let extern_c_path = out.join(EXTERN_C_NAME);
@@ -83,6 +85,7 @@ impl DriverlibBuilder {
             driverlib_sources: cc2650_crate_driverlib_sources,
             driverlib_includes: cc2650_crate_driverlib_includes,
             lib_norom_original_path,
+            lib_norom_work_path,
             lib_rom_original_path,
             lib_rom_filtered_path,
             extern_c_path,
@@ -107,8 +110,8 @@ impl DriverlibBuilder {
         // The others are stripped from the ROM ELF.
         self.strip_disabled_rom_fns();
 
-        // Remove "NOROM_" prefix from symbols in libdriverlib.a.
-        //self.unprefix_norom_symbols();
+        // Copy norom lib so that subsequent operations don't overwrite the original.
+        self.copy_norom_lib();
 
         // Remove from libdriverlib.a symbols that are to be called from ROM,
         // in order to prevent multiple definitions linking errors.
@@ -297,7 +300,7 @@ impl DriverlibBuilder {
 
         let status = Command::new("llvm-ar")
             .arg("rcs")
-            .arg(&self.lib_norom_original_path)
+            .arg(&self.lib_norom_work_path)
             .arg(&rom_symbols_o_path)
             .arg(&self.extern_o_path)
             .status()
@@ -305,7 +308,7 @@ impl DriverlibBuilder {
         assert!(status.success(), "merge driverlib llvm-ar failed");
 
         // Copy lib to the path expected by the linker.
-        std::fs::copy(&self.lib_norom_original_path, self.out.join(LIB_NOROM_FINAL))
+        std::fs::copy(&self.lib_norom_work_path, self.out.join(LIB_NOROM_FINAL))
             .expect("Falied to copy library to the final location.");
     }
 
@@ -343,6 +346,11 @@ impl DriverlibBuilder {
         }
     }
 
+    fn copy_norom_lib(&self) {
+        std::fs::copy(&self.lib_norom_original_path, &self.lib_norom_work_path)
+            .expect("Failed to copy NOROM lib into OUT_DIR");
+    }
+
     fn strip_rom_symbols_from_norom_lib(&self) {
         const EXCLUDED: &[&str] = &[
             // Not stripped, because these are used in relocations.
@@ -363,7 +371,7 @@ impl DriverlibBuilder {
             let status = Command::new("llvm-objcopy")
                 .arg("--strip-symbol")
                 .arg(symbol)
-                .arg(&self.lib_norom_original_path)
+                .arg(&self.lib_norom_work_path)
                 .status()
                 .unwrap();
             assert_eq!(status.code(), Some(0));
