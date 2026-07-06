@@ -1,37 +1,44 @@
 #![no_std]
 #![no_main]
 
-use core::fmt::Write;
 use embassy_executor::Spawner;
 use embassy_ti_cc2650::chip::peripherals;
-use embassy_ti_cc2650::uart::{Config, UartFull};
+use embassy_ti_cc2650::uart::{Config, UartFull, UartFullRxReceiver, UartFullRxReceiverImpl, UartFullRxRunner};
 use embassy_ti_cc2650::{bind_interrupts, uart};
-use heapless::String;
 use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     UART0 => uart::InterruptHandler<peripherals::UART0>;
 });
 
-const CHUNK_SIZE: usize = 8;
+#[embassy_executor::task]
+async fn uart_task(mut runner: UartFullRxRunner<'static>) {
+    runner.run().await;
+}
+
+const CHUNK_SIZE: usize = 66;
 const BAUDRATE: u32 = 115200;
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
     let mut config = Config::default();
     config.baudrate = BAUDRATE;
-    let uart = UartFull::new(p.UART0, config, Irqs);
 
-    let mut buf = [0; CHUNK_SIZE];
-    let (tx, rx) = uart.split();
+    let (uart, rx_end) = UartFull::new(p.UART0, config, Irqs);
+    let mut uart_receiver = UartFullRxReceiverImpl::new(rx_end);
+
+    // split() consumes uart.
+    let (tx, rx_runner) = uart.split();
+    spawner.spawn(uart_task(rx_runner).unwrap());
+
+    let mut buf = [0; CHUNK_SIZE - 2];
     loop {
-        // uart.read(&mut buf, CHUNK_SIZE).await.unwrap();
-        // uart.write(&buf, CHUNK_SIZE).await.unwrap();
-        let bytes_read = rx.read(&mut buf, CHUNK_SIZE).await.unwrap();
-        let mut text_buffer: String<16> = String::new();
-        write!(text_buffer, "{}\r\n", bytes_read).unwrap();
-        tx.write(text_buffer.as_bytes(), text_buffer.len()).await.unwrap();
-        //tx.write(&buf, CHUNK_SIZE).await.unwrap();
+        // This will read bytes until it encounters '\n' OR fills the whole buffer.
+        let bytes_read = uart_receiver.read(&mut buf).await;
+        // Receiver ignores '\n', so it might return 0.
+        if bytes_read > 0 {
+            tx.write(&buf, bytes_read).await.unwrap();
+        }
     }
 }

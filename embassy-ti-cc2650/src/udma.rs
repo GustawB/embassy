@@ -98,6 +98,7 @@ impl Udma {
     }
 
     #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_transfer_rx(&self, mem: &mut [u8]) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.set_transfer(
@@ -134,6 +135,7 @@ impl Udma {
     }
 
     #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_request_done_rx(&self) -> bool {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.is_request_done() }
     }
@@ -144,6 +146,7 @@ impl Udma {
     }
 
     #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_request_done_rx_mask(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
@@ -153,6 +156,7 @@ impl Udma {
     }
 
     #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_request_done_rx_unmask(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
@@ -162,6 +166,7 @@ impl Udma {
     }
 
     #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_request_done_rx_clear(&self) {
         unsafe {
             static_mut_ref!(CHANNEL_CONTROL_MAP)
@@ -197,8 +202,9 @@ impl Udma {
         }
     }
 
-    #[inline]
     // Safety: use only when uDMA rx disabled.
+    #[inline]
+    #[allow(unused)]
     pub(crate) fn uart_dest_addr_rx_get(&self) -> u32 {
         unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.dest_end_ptr }
     }

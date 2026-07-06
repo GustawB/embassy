@@ -13,6 +13,7 @@ critical-section = "1.2"
 cortex-m-rt = ">=0.6.15,<0.8"
 cortex-m = "0.7.6"
 paste = "1.0.15"
+static_cell = "2.1.1"
 
 [build-dependencies]
 bindgen = { version = "0.72.1" }
