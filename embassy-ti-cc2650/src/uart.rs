@@ -509,7 +509,7 @@ impl<'a> UartFull<'a> {
         }
 
         // Configure channels used for data requests by UART0.
-        UDMA.uart_channels_configure();
+        UDMA.uart_tx_channel_configure();
 
         // UART uDMA transactions should be only enabled when an actual transmission happens.
         UDMA.uart_disable_tx();

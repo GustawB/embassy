@@ -10,27 +10,22 @@
 //! - DMA generates interrupts for peripherals, so their own interrupt triggers should be turned off
 //!   if DMA is in use.
 
+use core::ops::Deref;
 use core::u32;
 use core::{ffi::c_void, marker::PhantomData, ptr::addr_of};
 
 use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
+use core::cell::UnsafeCell;
 use paste::paste;
 
-const UART0_RX_CHANNEL: u32 = 1;
 const UART0_TX_CHANNEL: u32 = 2;
 
 // 1073872896 is the start address of registers for UART0.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
 define_peri!(IUdma, udma0, 1073872896);
-
-macro_rules! static_mut_ref {
-    ($static_mut:ident) => {
-        (&mut *core::ptr::addr_of_mut!($static_mut))
-    };
-}
 
 pub(crate) static UDMA: Udma = Udma {};
 
@@ -68,24 +63,7 @@ impl Udma {
     }
 
     #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_disable_rx(&self) {
-        unsafe {
-            driverlib::uDMAChannelDisable(driverlib::UDMA0_BASE, UART0_RX_CHANNEL);
-        }
-    }
-
-    #[inline]
-    pub(crate) fn uart_channels_configure(&self) {
-        let channel_struct_index_rx = driverlib::UDMA_PRI_SELECT | UART0_RX_CHANNEL;
-        // On receive, uDMA repeatedly reads 8 bytes from DR (no incr) and writes it to the
-        // destination (increment).
-        let channel_control_rx =
-            driverlib::UDMA_SIZE_8 | driverlib::UDMA_SRC_INC_NONE | driverlib::UDMA_DST_INC_8 | driverlib::UDMA_ARB_32;
-        unsafe {
-            driverlib::uDMAChannelControlSet(driverlib::UDMA0_BASE, channel_struct_index_rx, channel_control_rx);
-        };
-
+    pub(crate) fn uart_tx_channel_configure(&self) {
         let channel_struct_index_tx = driverlib::UDMA_PRI_SELECT | UART0_TX_CHANNEL;
 
         // On send, uDMA repeatedly writes 8 bytes from source (increment) and writes it to the
@@ -98,22 +76,9 @@ impl Udma {
     }
 
     #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_transfer_rx(&self, mem: &mut [u8]) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.set_transfer(
-                &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
-                mem.as_mut_ptr() as *mut (),
-                mem.len() as u32,
-            );
-            driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_RX_CHANNEL);
-        }
-    }
-
-    #[inline]
     pub(crate) fn uart_transfer_tx(&self, mem: &[u8]) {
         unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
+            (*CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
                 mem.as_ptr() as *mut (),
                 &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
                 mem.len() as u32,
@@ -124,89 +89,28 @@ impl Udma {
 
     #[inline]
     #[allow(unused)]
-    pub(crate) fn uart_is_enabled_rx(&self) -> bool {
-        unsafe { driverlib::uDMAChannelIsEnabled(driverlib::UDMA0_BASE, UART0_RX_CHANNEL) }
-    }
-
-    #[inline]
-    #[allow(unused)]
     pub(crate) fn uart_is_enabled_tx(&self) -> bool {
         unsafe { driverlib::uDMAChannelIsEnabled(driverlib::UDMA0_BASE, UART0_TX_CHANNEL) }
     }
 
     #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_request_done_rx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.is_request_done() }
-    }
-
-    #[inline]
     pub(crate) fn uart_request_done_tx(&self) -> bool {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_2.is_request_done() }
-    }
-
-    #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_request_done_rx_mask(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_1
-                .request_done_mask()
-        }
-    }
-
-    #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_request_done_rx_unmask(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_1
-                .request_done_unmask()
-        }
-    }
-
-    #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_request_done_rx_clear(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_1
-                .request_done_clear()
-        }
+        (*CHANNEL_CONTROL_MAP).primary_channel_2.is_request_done()
     }
 
     #[inline]
     pub(crate) fn uart_request_done_tx_mask(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_2
-                .request_done_mask()
-        }
+        (*CHANNEL_CONTROL_MAP).primary_channel_2.request_done_mask()
     }
 
     #[inline]
     pub(crate) fn uart_request_done_tx_unmask(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_2
-                .request_done_unmask()
-        }
+        (*CHANNEL_CONTROL_MAP).primary_channel_2.request_done_unmask()
     }
 
     #[inline]
     pub(crate) fn uart_request_done_tx_clear(&self) {
-        unsafe {
-            static_mut_ref!(CHANNEL_CONTROL_MAP)
-                .primary_channel_2
-                .request_done_clear()
-        }
-    }
-
-    // Safety: use only when uDMA rx disabled.
-    #[inline]
-    #[allow(unused)]
-    pub(crate) fn uart_dest_addr_rx_get(&self) -> u32 {
-        unsafe { static_mut_ref!(CHANNEL_CONTROL_MAP).primary_channel_1.dest_end_ptr }
+        (*CHANNEL_CONTROL_MAP).primary_channel_2.request_done_clear()
     }
 }
 
@@ -237,13 +141,6 @@ pub mod control_word {
         pub src_addr_inc: SrcAddrIncrement,
         pub dst_addr_inc: DstAddrIncrement,
         pub arbitration_size: ArbitrationSize,
-    }
-
-    impl ControlWord {
-        #[inline]
-        pub fn as_u32(&self) -> u32 {
-            self.data_size as u32 | self.src_addr_inc as u32 | self.dst_addr_inc as u32 | self.arbitration_size as u32
-        }
     }
 
     #[derive(Clone, Copy)]
@@ -481,9 +378,18 @@ struct ChannelControlMap {
     alternate_channel_31: ChannelControlEntry<Alternate, 63>, // Reserved
 }
 
-impl ChannelControlMap {}
+struct SyncMapWrapper(UnsafeCell<ChannelControlMap>);
+unsafe impl Sync for SyncMapWrapper {}
 
-static mut CHANNEL_CONTROL_MAP: ChannelControlMap = ChannelControlMap {
+impl Deref for SyncMapWrapper {
+    type Target = ChannelControlMap;
+
+    fn deref(&self) -> &Self::Target {
+        unsafe { &*self.0.get() }
+    }
+}
+
+static CHANNEL_CONTROL_MAP: SyncMapWrapper = SyncMapWrapper(UnsafeCell::new(ChannelControlMap {
     primary_channel_0: ChannelControlEntry::new(),
     primary_channel_1: ChannelControlEntry::new(),
     primary_channel_2: ChannelControlEntry::new(),
@@ -609,4 +515,4 @@ static mut CHANNEL_CONTROL_MAP: ChannelControlMap = ChannelControlMap {
     alternate_channel_30: ChannelControlEntry::new(),
     #[cfg(feature = "full_udma_table")]
     alternate_channel_31: ChannelControlEntry::new(),
-};
+}));
