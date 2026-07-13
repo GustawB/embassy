@@ -29,16 +29,14 @@ async fn main(spawner: Spawner) {
     let mut uart_receiver = UartFullRxReceiverImpl::new(rx_end);
 
     // split() consumes uart.
-    let (tx, rx_runner) = uart.split();
+    let (mut tx, rx_runner) = uart.split();
     spawner.spawn(uart_task(rx_runner).unwrap());
 
     let mut buf = [0; CHUNK_SIZE - 2];
     loop {
         // This will read bytes until it encounters '\n' OR fills the whole buffer.
-        let bytes_read = uart_receiver.read(&mut buf).await;
+        let bytes_read = uart_receiver.read(&mut buf).await.unwrap();
         // Receiver ignores '\n', so it might return 0.
-        if bytes_read > 0 {
-            tx.write(&buf, bytes_read).await.unwrap();
-        }
+        tx.write(&buf[..bytes_read]).await.unwrap();
     }
 }

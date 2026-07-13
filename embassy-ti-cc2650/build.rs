@@ -21,7 +21,6 @@ const LIB_NOROM_FINAL: &str = "libdriverlib.a";
 
 const DRIVERLIB_SOURCES: &str = "driverlib";
 const DRIVERLIB_INCLUDES: &str = "inc";
-const BINDINGS_PATH: &str = "src/driverlib/bindings.rs";
 
 const EXTERN_C_NAME: &str = "extern.c";
 const EXTERN_O_NAME: &str = "extern.o";
@@ -126,7 +125,7 @@ impl DriverlibBuilder {
     }
 
     fn generate_driverlib_full_h(&self) {
-        let driverlib_full_h_path = self.driverlib_sources.join("driverlib_full.h");
+        let driverlib_full_h_path = self.out.join("driverlib_full.h");
         let mut driverlib_full_h =
             std::fs::File::create(&driverlib_full_h_path).expect("Failed to create driverlib_full.h");
 
@@ -177,16 +176,14 @@ impl DriverlibBuilder {
     }
 
     fn generate_bindings(&self) {
-        println!(
-            "cargo:rerun-if-changed={}/driverlib_full.h",
-            self.driverlib_sources.display()
-        );
+        println!("cargo:rerun-if-changed={}", self.driverlib_sources.display());
+        println!("cargo:rerun-if-changed={}", self.driverlib_includes.display());
 
         // Create driverlib bindings
         let bindings = bindgen::Builder::default()
             // The input header we would like to generate
             // bindings for.
-            .header(format!("{}/driverlib_full.h", self.driverlib_sources.display()))
+            .header(format!("{}/driverlib_full.h", self.out.display()))
             // This creates wrapper functions around "static inline" fns to make them available...
             .wrap_static_fns(true)
             // ...and this stores them in the provided path.
@@ -201,6 +198,8 @@ impl DriverlibBuilder {
             .clang_arg("-D__GLIBC_USE(...)")
             // Add driverlib headers. E.g. "inc/hw_types.h" is required.
             .clang_arg(format!("-I{}", self.driverlib_includes.display()))
+            // Add sources as the header is now separated from the driverlib itself.
+            .clang_arg(format!("-I{}", self.driverlib_sources.display()))
             // Add newlib headers. E.g. <string.h> is required.
             .clang_arg(format!("-I{}", self.newlib_inc_path))
             // Don't extract doc comments.
@@ -218,7 +217,9 @@ impl DriverlibBuilder {
             // Unwrap the Result and panic on failure.
             .unwrap_or_else(|err| panic!("Unable to generate bindings: {}", err));
 
-        bindings.write_to_file(BINDINGS_PATH).expect("Couldn't write bindings!");
+        bindings
+            .write_to_file(self.out.join("bindings.rs"))
+            .expect("Couldn't write bindings!");
     }
 
     fn compile_static_inline_extern_fns(&self) {
@@ -228,6 +229,7 @@ impl DriverlibBuilder {
             .warnings(false)
             .include(self.newlib_inc_path.as_str())
             .include(&self.driverlib_includes)
+            .include(&self.driverlib_sources)
             .include(".")
             .flag("-flto=thin")
             .flag("-mthumb")

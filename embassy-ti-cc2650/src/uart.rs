@@ -1,8 +1,5 @@
 #![macro_use]
 
-use core::marker::PhantomData;
-use core::usize;
-
 use crate::chip::interrupt;
 use crate::define_peri;
 use crate::driverlib;
@@ -16,8 +13,12 @@ use crate::udma::UDMA;
 use cc2650::uart0::ifls::{RXSELW, TXSELW};
 use core::future;
 use core::future::poll_fn;
+use core::marker::PhantomData;
+use core::ptr::addr_of;
 use core::sync::atomic::{Ordering, compiler_fence};
 use core::task::Poll;
+use core::usize;
+use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::waitqueue::AtomicWaker;
@@ -32,6 +33,11 @@ define_peri!(Uart, uart0, 1073745920);
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
+
+const FE: u8 = 0b1;
+const PE: u8 = 0b10;
+const BE: u8 = 0b100;
+const OE: u8 = 0b1000;
 
 pub trait UartPinConfig {
     fn tx() -> u32;
@@ -132,17 +138,25 @@ macro_rules! impl_uart {
 }
 
 #[derive(Debug)]
-pub enum Error {
+pub enum RxError {
+    /// Buffer overrun
+    Overrun(usize),
+    /// Parity error
+    Parity(usize),
+    /// Framing error
+    Framing(usize),
+    /// Break condition
+    Break(usize),
+}
+
+#[derive(Debug)]
+pub enum TxError {
+    ///Buffer was empty
+    BufferEmpty,
     /// Buffer was too long.
     BufferTooLong,
-    /// Buffer overrun
-    Overrun,
-    /// Parity error
-    Parity,
-    /// Framing error
-    Framing,
-    /// Break condition
-    Break,
+    /// Buffer was coming from FLASH memory
+    SramMemory,
 }
 
 fn enable_uart_irqs(flags: u32) {
@@ -173,8 +187,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         UART.icr.write(|w| {
             w.beic() // break error
                 .set_bit()
-                // .ctsmic()            // Clear-To-Send ...
-                // .set_bit()
                 .feic() // framing error
                 .set_bit()
                 .oeic() // buffer overrun error
@@ -188,21 +200,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                 .txic() // transmit
                 .set_bit()
         });
-
-        // If an error happened, mask the error interrupts,
-        // BUT don't clear the RSR/ECR; it is up to the poller
-        // (e.g. reader) to check the error status, clear the status
-        // and reenable error interrupts.
-        if mis.femis().bit_is_set() // Framing Error
-                    || mis.pemis().bit_is_set() // Parity Error
-                    || mis.bemis().bit_is_set() // Break Error
-                    || mis.oemis().bit_is_set()
-        // Overrun Error
-        {
-            disable_uart_irqs(
-                driverlib::UART_INT_OE | driverlib::UART_INT_BE | driverlib::UART_INT_PE | driverlib::UART_INT_FE,
-            );
-        }
 
         // UART write complete.
         if UDMA.uart_request_done_tx() {
@@ -221,71 +218,70 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     }
 }
 
-fn check_errors() -> Result<(), Error> {
-    let rsr = UART.rsr.read();
-    if rsr.fe().bit_is_set() || rsr.pe().bit_is_set() || rsr.be().bit_is_set() || rsr.oe().bit_is_set() {
-        unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
-        enable_uart_irqs(
-            driverlib::UART_INT_OE | driverlib::UART_INT_BE | driverlib::UART_INT_PE | driverlib::UART_INT_FE,
-        );
-
-        if rsr.fe().bit_is_set() {
-            Err(Error::Framing)
-        } else if rsr.pe().bit_is_set() {
-            Err(Error::Parity)
-        } else if rsr.be().bit_is_set() {
-            Err(Error::Break)
-        } else {
-            Err(Error::Overrun)
-        }
-    } else {
-        Ok(())
-    }
-}
-
 /// Trait for the UART receiver. User can implement it for custom behaviour,
 /// or use the predefined impl.
 pub trait UartFullRxReceiver<'d> {
     /// Initializes a new instance of the receiver. 'rx' is the reading end
     /// of the UART data.
-    fn new(rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u8>) -> Self;
+    fn new(rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u16>) -> Self;
     /// Reads data to the 'buf' according to the implemented logic.
-    fn read(&mut self, buf: &mut [u8]) -> impl future::Future<Output = usize>;
+    fn read(&mut self, buf: &mut [u8]) -> impl future::Future<Output = Result<usize, RxError>>;
 }
 
 /// Predefined impl of the 'UartFullRxReceiver' trait.
 pub struct UartFullRxReceiverImpl<'d> {
-    rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u8>,
+    rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u16>,
+}
+
+impl<'d> UartFullRxReceiverImpl<'d> {
+    fn check_errors(rsr: u8, ptr: usize) -> Result<usize, RxError> {
+        if rsr & FE != 0 {
+            Err(RxError::Framing(ptr))
+        } else if rsr & PE != 0 {
+            Err(RxError::Parity(ptr))
+        } else if rsr & BE != 0 {
+            Err(RxError::Break(ptr))
+        } else if rsr & OE != 0 {
+            Err(RxError::Overrun(ptr))
+        } else {
+            Ok(ptr)
+        }
+    }
 }
 
 impl<'d> UartFullRxReceiver<'d> for UartFullRxReceiverImpl<'d> {
-    fn new(rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u8>) -> Self {
+    fn new(rx: zerocopy_channel::Receiver<'d, NoopRawMutex, u16>) -> Self {
         Self { rx }
     }
 
     /// Reads bytes into the 'buf' until it encounters 'LF', 'CR' or fills up the whole buffer.
-    /// Returns the number of bytes read.
+    /// Returns the number of bytes read, and possibly RX error.
     /// 'LF' and 'CR' are scraped, so this function can return 0.
-    fn read(&mut self, buf: &mut [u8]) -> impl future::Future<Output = usize> {
+    fn read(&mut self, buf: &mut [u8]) -> impl future::Future<Output = Result<usize, RxError>> {
         async {
             let mut ptr = 0usize;
             while ptr != buf.len() {
                 let rx_slot = self.rx.receive().await;
-                buf[ptr] = *rx_slot;
+                let rx_slot_bytes = (*rx_slot).to_le_bytes();
+                buf[ptr] = rx_slot_bytes[0];
                 rx_slot.receive_done();
                 if buf[ptr] == LF || buf[ptr] == CR {
-                    return ptr;
+                    return Ok(ptr);
                 }
                 ptr += 1;
+                let res = Self::check_errors(rx_slot_bytes[1], ptr);
+                if res.is_err() {
+                    return res;
+                }
             }
-            ptr
+            Ok(ptr)
         }
     }
 }
 
 pub struct UartFullRxRunner<'d> {
     state: &'static State,
-    tx: zerocopy_channel::Sender<'d, NoopRawMutex, u8>,
+    tx: zerocopy_channel::Sender<'d, NoopRawMutex, u16>,
 }
 
 impl<'d> UartFullRxRunner<'d> {
@@ -305,8 +301,10 @@ impl<'d> UartFullRxRunner<'d> {
             // This also covers data that arrived AFTER RX/RT interrupt fired.
             while unsafe { driverlib::UARTCharsAvail(driverlib::UART0_BASE) } {
                 let mut tx_slot = self.tx.send().await;
-                *tx_slot = unsafe { driverlib::UARTCharGet(driverlib::UART0_BASE) } as u8;
+                // 8 bits for data and 4 bits for errors -> u16.
+                *tx_slot = unsafe { driverlib::UARTCharGet(driverlib::UART0_BASE) } as u16;
                 tx_slot.send_done();
+                unsafe { driverlib::UARTRxErrorClear(driverlib::UART0_BASE) };
             }
 
             // There is no more data, so reenable RX/RT irqs and repeat the loop.
@@ -315,20 +313,21 @@ impl<'d> UartFullRxRunner<'d> {
     }
 }
 
-pub struct UartFullTx {
+pub struct UartFullTx<T: Instance> {
     state: &'static State,
+    _p: PhantomData<T>,
 }
 
-impl UartFullTx {
+impl<T: Instance> UartFullTx<T> {
     pub fn configure_tx_interrupts(&self, fill_level: FIFOFillLevel) {
         // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
-        UartFull::disable_uart();
+        UartFull::<T>::disable_uart();
 
         match fill_level {
             FIFOFillLevel::Disabled => {
                 // Disable tx interrupt.
                 disable_uart_irqs(driverlib::UART_INT_TX);
-                UartFull::enable_uart();
+                UartFull::<T>::enable_uart();
                 return;
             }
             FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_1_8)),
@@ -341,7 +340,7 @@ impl UartFullTx {
         // Enable transmit interrupt
         enable_uart_irqs(driverlib::UART_INT_TX);
 
-        UartFull::enable_uart();
+        UartFull::<T>::enable_uart();
     }
 
     fn tx_fifo_empty(&self) -> bool {
@@ -356,13 +355,36 @@ impl UartFullTx {
         UART.dmactl.modify(|_r, w| w.txdmae().set_bit());
     }
 
+    fn sanitize_tx_input_buffer(&self, buffer: &[u8]) -> Result<(), TxError> {
+        if buffer.len() > driverlib::UDMA_XFER_SIZE_MAX as usize {
+            return Err(TxError::BufferTooLong);
+        }
+        if buffer.len() == 0 {
+            return Err(TxError::BufferEmpty);
+        }
+        if (addr_of!(buffer) as u32) < driverlib::SRAM_BASE {
+            return Err(TxError::SramMemory);
+        }
+        Ok(())
+    }
+
+    /// uDMA-based, asynchronous write. Each write should be smaller than UDMA_XFER_SIZE_MAX ,
+    /// and because of uDMA limitations, data should not come from the FLASH memory.
     #[allow(unused)]
-    pub async fn write(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
-        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
-            return Err(Error::BufferTooLong);
+    pub async fn write(&mut self, buffer: &[u8]) -> Result<(), TxError> {
+        let res = self.sanitize_tx_input_buffer(buffer);
+        if res.is_err() {
+            return res;
         }
 
-        UDMA.uart_transfer_tx(&buffer[..tx_len]);
+        let drop = OnDrop::new(move || {
+            UDMA.uart_disable_tx();
+            UART.dmactl.modify(|_r, w| w.txdmae().clear_bit());
+            UDMA.uart_request_done_tx_clear();
+            UDMA.uart_request_done_tx_unmask();
+        });
+
+        UDMA.uart_transfer_tx(buffer);
 
         compiler_fence(Ordering::SeqCst);
 
@@ -370,10 +392,7 @@ impl UartFullTx {
 
         let result = poll_fn(|cx| {
             self.state.tx_waker.register(cx.waker());
-            if let Err(e) = check_errors() {
-                UDMA.uart_disable_tx();
-                return Poll::Ready(Err(e));
-            } else if UDMA.uart_request_done_tx() {
+            if UDMA.uart_request_done_tx() {
                 return Poll::Ready(Ok(()));
             }
             Poll::Pending
@@ -384,28 +403,24 @@ impl UartFullTx {
 
         UDMA.uart_request_done_tx_clear();
         UDMA.uart_request_done_tx_unmask();
+        drop.defuse();
         result
     }
 
     /// Same as write(), but instead of async polling it executes busy while() loop.
     #[allow(unused)]
-    pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
-        if tx_len > driverlib::UDMA_XFER_SIZE_MAX as usize {
-            return Err(Error::BufferTooLong);
+    pub fn write_blocking(&mut self, buffer: &[u8]) -> Result<(), TxError> {
+        let res = self.sanitize_tx_input_buffer(buffer);
+        if res.is_err() {
+            return res;
         }
-
-        UDMA.uart_transfer_tx(&buffer[..tx_len]);
+        UDMA.uart_transfer_tx(buffer);
 
         compiler_fence(Ordering::SeqCst);
 
         self.dma_start_tx();
 
-        while !UDMA.uart_request_done_tx() {
-            if let Err(e) = check_errors() {
-                UDMA.uart_disable_tx();
-                return Err(e);
-            }
-        }
+        while !UDMA.uart_request_done_tx() {}
 
         compiler_fence(Ordering::SeqCst);
 
@@ -415,38 +430,38 @@ impl UartFullTx {
     }
 }
 
-pub struct UartFull<'a> {
+pub struct UartFull<'a, T: Instance> {
     rx_runner: UartFullRxRunner<'a>,
-    tx: UartFullTx,
-    _p: PhantomData<&'a ()>,
+    tx: UartFullTx<T>,
+    _peri: Peri<'a, T>,
 }
 
-impl<'a> UartFull<'a> {
-    pub fn new<T: Instance>(
+impl<'a, T: Instance> UartFull<'a, T> {
+    pub fn new(
         uart: Peri<'a, T>,
         config: Config,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
-    ) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u8>) {
+    ) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u16>) {
         Self::new_inner(uart, config)
     }
 
-    fn new_inner<T: Instance>(
-        _uart: Peri<'a, T>,
-        config: Config,
-    ) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u8>) {
+    fn new_inner(uart: Peri<'a, T>, config: Config) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u16>) {
         Self::initialize::<Config>(config);
 
-        static COMM_BUF: StaticCell<[u8; 1024]> = StaticCell::new();
-        let comm_buf = COMM_BUF.init([0u8; 1024]);
+        static COMM_BUF: StaticCell<[u16; 512]> = StaticCell::new();
+        let comm_buf = COMM_BUF.init([0u16; 512]);
 
-        static COMM_CH: StaticCell<zerocopy_channel::Channel<'static, NoopRawMutex, u8>> = StaticCell::new();
+        static COMM_CH: StaticCell<zerocopy_channel::Channel<'static, NoopRawMutex, u16>> = StaticCell::new();
         let comm_ch = COMM_CH.init(zerocopy_channel::Channel::new(comm_buf));
 
         let (tx, rx) = comm_ch.split();
         let res = Self {
             rx_runner: UartFullRxRunner { state: T::state(), tx },
-            tx: UartFullTx { state: T::state() },
-            _p: PhantomData,
+            tx: UartFullTx::<T> {
+                state: T::state(),
+                _p: PhantomData,
+            },
+            _peri: uart,
         };
 
         T::Interrupt::unpend();
@@ -485,6 +500,7 @@ impl<'a> UartFull<'a> {
         };
 
         // Configure RX interrupts. TX interrupts are disabled by default as TX is handled by uDMA.
+        disable_uart_irqs(driverlib::UART_INT_TX);
         let mut disabled = false;
         match config.fifo_fill_level {
             FIFOFillLevel::Disabled => disabled = true,
@@ -501,6 +517,11 @@ impl<'a> UartFull<'a> {
         // Disable clear-to-send irq as uDMA handles TX.
         disable_uart_irqs(driverlib::UART_INT_CTS);
 
+        // Disable error irqs. Errors will be returned on read from the FIFO.
+        disable_uart_irqs(
+            driverlib::UART_INT_OE | driverlib::UART_INT_BE | driverlib::UART_INT_PE | driverlib::UART_INT_FE,
+        );
+
         unsafe {
             match config.hw_flow_control {
                 true => UARTHwFlowControlEnable(driverlib::UART0_BASE),
@@ -514,7 +535,7 @@ impl<'a> UartFull<'a> {
         // UART uDMA transactions should be only enabled when an actual transmission happens.
         UDMA.uart_disable_tx();
 
-        UartFull::enable_uart();
+        UartFull::<T>::enable_uart();
     }
 
     fn enable_uart() {
@@ -530,14 +551,14 @@ impl<'a> UartFull<'a> {
     }
 
     #[allow(unused)]
-    pub fn split(self) -> (UartFullTx, UartFullRxRunner<'a>) {
+    pub fn split(self) -> (UartFullTx<T>, UartFullRxRunner<'a>) {
         (self.tx, self.rx_runner)
     }
 
     #[allow(unused)]
     pub fn configure_rx_interrupts(&self, fill_level: FIFOFillLevel) {
         // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
-        UartFull::disable_uart();
+        UartFull::<T>::disable_uart();
 
         match fill_level {
             FIFOFillLevel::Disabled => {
@@ -545,7 +566,7 @@ impl<'a> UartFull<'a> {
                 // - receive interrupt
                 // - reception timeout interrupt
                 disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
-                UartFull::enable_uart();
+                UartFull::<T>::enable_uart();
                 return;
             }
             FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_1_8)),
@@ -559,7 +580,7 @@ impl<'a> UartFull<'a> {
         // - reception timeout interrupt
         enable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
 
-        UartFull::enable_uart();
+        UartFull::<T>::enable_uart();
     }
 
     #[allow(unused)]
@@ -592,14 +613,14 @@ impl<'a> UartFull<'a> {
     }
 
     #[allow(unused)]
-    pub async fn write(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
-        self.tx.write(buffer, tx_len).await
+    pub async fn write(&mut self, buffer: &[u8]) -> Result<(), TxError> {
+        self.tx.write(buffer).await
     }
 
     /// Same as write(), but instead of async polling it executes busy while() loop.
     #[allow(unused)]
-    pub fn write_blocking(&self, buffer: &[u8], tx_len: usize) -> Result<(), Error> {
-        self.tx.write_blocking(buffer, tx_len)
+    pub fn write_blocking(&mut self, buffer: &[u8]) -> Result<(), TxError> {
+        self.tx.write_blocking(buffer)
     }
 }
 

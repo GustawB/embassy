@@ -22,7 +22,7 @@ use paste::paste;
 
 const UART0_TX_CHANNEL: u32 = 2;
 
-// 1073872896 is the start address of registers for UART0.
+// 1073872896 is the start address of registers for UDMA0.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
 define_peri!(IUdma, udma0, 1073872896);
@@ -32,6 +32,8 @@ pub(crate) static UDMA: Udma = Udma {};
 pub(crate) struct Udma {}
 
 impl Udma {
+    // No separate `uart_enable_{tx,rx}` functions because enabling is done
+    // only in `uart_transfer_{tx,rx}`.
     #[inline(never)]
     pub(crate) fn enable(&self) {
         // Set the pointer to the channel control map.
@@ -42,6 +44,8 @@ impl Udma {
         // are reserved.
         IUDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
 
+        IUDMA.reqdone.reset();
+
         IUDMA.cfg.write(|w| w.masterenable().set_bit());
     }
 
@@ -50,9 +54,6 @@ impl Udma {
     pub(crate) fn disable(&self) {
         IUDMA.cfg.write(|w| w.masterenable().clear_bit());
     }
-
-    // No separate `uart_enable_{tx,rx}` functions because enabling is done
-    // only in `uart_transfer_{tx,rx}`.
 
     #[inline]
     #[allow(unused)]
@@ -69,7 +70,7 @@ impl Udma {
         // On send, uDMA repeatedly writes 8 bytes from source (increment) and writes it to the
         // DR (no incr).
         let channel_control_tx =
-            driverlib::UDMA_SIZE_8 | driverlib::UDMA_SRC_INC_8 | driverlib::UDMA_DST_INC_NONE | driverlib::UDMA_ARB_32;
+            driverlib::UDMA_SIZE_8 | driverlib::UDMA_SRC_INC_8 | driverlib::UDMA_DST_INC_NONE | driverlib::UDMA_ARB_16;
         unsafe {
             driverlib::uDMAChannelControlSet(driverlib::UDMA0_BASE, channel_struct_index_tx, channel_control_tx);
         };
