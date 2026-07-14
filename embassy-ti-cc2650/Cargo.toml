@@ -1,0 +1,29 @@
+[package]
+name = "embassy-ti-cc2650"
+version = "0.1.0"
+edition = "2024"
+links = "driverlib"
+
+[dependencies]
+cc2650 = { version = "0.1.1" }
+cty = "0.2.2"
+embassy-hal-internal = { version = "0.5.0", path = "../embassy-hal-internal", features = ["cortex-m", "prio-bits-3"] }
+embassy-sync = { version = "0.8.0", path = "../embassy-sync" }
+critical-section = "1.2"
+cortex-m-rt = ">=0.6.15,<0.8"
+cortex-m = "0.7.6"
+paste = "1.0.15"
+static_cell = "2.1.1"
+
+[build-dependencies]
+bindgen = { version = "0.72.1" }
+cc = "1.2.60"
+
+
+[features]
+default = ["rt"]
+## Cortex-M runtime (enabled by default)
+rt = ["cc2650/rt"]
+full_udma_table= []
+defmt = ["cc2650/defmt"]
+ieee = []
