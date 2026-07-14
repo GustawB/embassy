@@ -9,8 +9,8 @@ use crate::driverlib::{UARTDisable, UARTEnable};
 use crate::driverlib::{UARTHwFlowControlDisable, UARTHwFlowControlEnable};
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac;
+use crate::pac::uart0::ifls::RXSELW;
 use crate::udma::UDMA;
-use cc2650::uart0::ifls::{RXSELW, TXSELW};
 use core::future;
 use core::future::poll_fn;
 use core::marker::PhantomData;
@@ -42,8 +42,8 @@ const OE: u8 = 0b1000;
 pub trait UartPinConfig {
     fn tx() -> u32;
     fn rx() -> u32;
-    fn rts() -> u32;
-    fn cts() -> u32;
+    fn rts(hw: bool) -> u32;
+    fn cts(hw: bool) -> u32;
 }
 
 #[derive(Clone)]
@@ -68,6 +68,26 @@ pub struct Config {
     pub hw_flow_control: bool,
     pub baudrate: u32,
     pub fifo_fill_level: FIFOFillLevel,
+    pub tx_pin: u32,
+    pub rx_pin: u32,
+    pub rts_pin: u32,
+    pub cts_pin: u32,
+}
+
+impl Config {
+    fn rts(&self) -> u32 {
+        match self.hw_flow_control {
+            true => self.rts_pin,
+            false => driverlib::IOID_UNUSED,
+        }
+    }
+
+    fn cts(&self) -> u32 {
+        match self.hw_flow_control {
+            true => self.cts_pin,
+            false => driverlib::IOID_UNUSED,
+        }
+    }
 }
 
 impl Default for Config {
@@ -76,25 +96,11 @@ impl Default for Config {
             hw_flow_control: true,
             baudrate: 115_200,
             fifo_fill_level: FIFOFillLevel::Level48,
+            tx_pin: driverlib::IOID_3,
+            rx_pin: driverlib::IOID_2,
+            rts_pin: driverlib::IOID_8,
+            cts_pin: driverlib::IOID_4,
         }
-    }
-}
-
-impl UartPinConfig for Config {
-    fn tx() -> u32 {
-        driverlib::IOID_3
-    }
-
-    fn rx() -> u32 {
-        driverlib::IOID_2
-    }
-
-    fn rts() -> u32 {
-        driverlib::IOID_8
-    }
-
-    fn cts() -> u32 {
-        driverlib::IOID_4
     }
 }
 
@@ -185,19 +191,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         // clear interrupt flags
         UART.icr.write(|w| {
-            w.beic() // break error
-                .set_bit()
-                .feic() // framing error
-                .set_bit()
-                .oeic() // buffer overrun error
-                .set_bit()
-                .peic() // parity error
-                .set_bit()
-                .rtic() // reception timeout
+            w.rtic() // receive timeout
                 .set_bit()
                 .rxic() // receive
-                .set_bit()
-                .txic() // transmit
                 .set_bit()
         });
 
@@ -319,30 +315,6 @@ pub struct UartFullTx<T: Instance> {
 }
 
 impl<T: Instance> UartFullTx<T> {
-    pub fn configure_tx_interrupts(&self, fill_level: FIFOFillLevel) {
-        // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
-        UartFull::<T>::disable_uart();
-
-        match fill_level {
-            FIFOFillLevel::Disabled => {
-                // Disable tx interrupt.
-                disable_uart_irqs(driverlib::UART_INT_TX);
-                UartFull::<T>::enable_uart();
-                return;
-            }
-            FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_1_8)),
-            FIFOFillLevel::Level28 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_2_8)),
-            FIFOFillLevel::Level48 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_4_8)),
-            FIFOFillLevel::Level68 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_6_8)),
-            FIFOFillLevel::Level78 => UART.ifls.modify(|_r, w| w.txsel().variant(TXSELW::_7_8)),
-        };
-
-        // Enable transmit interrupt
-        enable_uart_irqs(driverlib::UART_INT_TX);
-
-        UartFull::<T>::enable_uart();
-    }
-
     fn tx_fifo_empty(&self) -> bool {
         UART.fr.read().txfe().bit_is_set()
     }
@@ -442,11 +414,7 @@ impl<'a, T: Instance> UartFull<'a, T> {
         config: Config,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
     ) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u16>) {
-        Self::new_inner(uart, config)
-    }
-
-    fn new_inner(uart: Peri<'a, T>, config: Config) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u16>) {
-        Self::initialize::<Config>(config);
+        Self::initialize(config);
 
         static COMM_BUF: StaticCell<[u16; 512]> = StaticCell::new();
         let comm_buf = COMM_BUF.init([0u16; 512]);
@@ -470,17 +438,17 @@ impl<'a, T: Instance> UartFull<'a, T> {
     }
 
     #[inline]
-    fn initialize<PinCfg: UartPinConfig>(config: Config) {
+    fn initialize(config: Config) {
         UDMA.enable();
 
         // Setup IO pins for UART0.
         unsafe {
             driverlib::IOCPinTypeUart(
                 driverlib::UART0_BASE,
-                PinCfg::rx(),
-                PinCfg::tx(),
-                PinCfg::cts(),
-                PinCfg::rts(),
+                config.rx_pin,
+                config.tx_pin,
+                config.cts(),
+                config.rts(),
             )
         };
 
@@ -538,24 +506,14 @@ impl<'a, T: Instance> UartFull<'a, T> {
         UartFull::<T>::enable_uart();
     }
 
-    fn enable_uart() {
-        unsafe {
-            UARTEnable(driverlib::UART0_BASE);
-        };
-    }
-
-    fn disable_uart() {
-        unsafe {
-            UARTDisable(driverlib::UART0_BASE);
-        };
-    }
-
     #[allow(unused)]
     pub fn split(self) -> (UartFullTx<T>, UartFullRxRunner<'a>) {
         (self.tx, self.rx_runner)
     }
 
     #[allow(unused)]
+    /// This function will wait until there is no more data to send,
+    /// but it won't wait for the RX FIFO (data might be lost).
     pub fn configure_rx_interrupts(&self, fill_level: FIFOFillLevel) {
         // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
         UartFull::<T>::disable_uart();
@@ -566,7 +524,7 @@ impl<'a, T: Instance> UartFull<'a, T> {
                 // - receive interrupt
                 // - reception timeout interrupt
                 disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
-                UartFull::<T>::enable_uart();
+                UART.ctl.write(|w| w.uarten().set_bit());
                 return;
             }
             FIFOFillLevel::Level18 => UART.ifls.modify(|_r, w| w.rxsel().variant(RXSELW::_1_8)),
@@ -583,9 +541,21 @@ impl<'a, T: Instance> UartFull<'a, T> {
         UartFull::<T>::enable_uart();
     }
 
-    #[allow(unused)]
-    pub fn configure_tx_interrupts(&self, fill_level: FIFOFillLevel) {
-        self.tx.configure_tx_interrupts(fill_level);
+    fn enable_uart() {
+        unsafe {
+            UARTEnable(driverlib::UART0_BASE);
+        };
+    }
+
+    /// UARTDisable waits until the BUSY flag for TX is cleared.
+    /// According to TI-TRM 19.4.3, this happens only, when:
+    /// 1. TX FIFO empty &&
+    /// 2. Last character was transmitted from the shift register.
+    /// So, this function waits for TX FIFO to be empty.
+    fn disable_uart() {
+        unsafe {
+            UARTDisable(driverlib::UART0_BASE);
+        };
     }
 
     #[allow(unused)]

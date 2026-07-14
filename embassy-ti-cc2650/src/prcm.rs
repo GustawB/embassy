@@ -36,7 +36,7 @@ impl PowerDomains {
         Self(self.0 | PowerDomain::Vims as u32)
     }
 
-    pub const fn sysbus(&self) -> Self {
+    pub const fn sysbus(self) -> Self {
         Self(self.0 | PowerDomain::Sysbus as u32)
     }
 
@@ -199,6 +199,8 @@ impl Clock {
         Self::reload_clock_controller(&prcm.clkloadctl);
     }
 
+    // TODO: why this feature? This comes from wprzytula code,
+    // I will come back to this when I start working on the radio.
     #[cfg(feature = "ieee")]
     pub(crate) fn disable_clocks(prcm: &pac::prcm::RegisterBlock, clocks: Clocks) {
         if clocks.gpio {

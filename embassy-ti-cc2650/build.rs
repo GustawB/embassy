@@ -8,9 +8,6 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-// const NEWLIB_INC_PATH: &str = "NEWLIB_INC_PATH";
-const NEWLIB_INC_PATH: &str = "/usr/lib/arm-none-eabi/include";
-
 const DRIVERLIB_ROOT: &str = "coresdk_cc13xx_cc26xx/source/ti/devices/cc26x0";
 
 const LIB_ROM_ORIGINAL: &str = "rom/driverlib.elf";
@@ -63,7 +60,10 @@ struct DriverlibBuilder {
 
 impl DriverlibBuilder {
     fn new(out: PathBuf) -> Self {
-        let newlib_inc_path = NEWLIB_INC_PATH.to_string();
+        println!("cargo:rerun-if-env-changed=NEWLIB_INC_PATH");
+
+        let newlib_inc_path =
+            std::env::var("NEWLIB_INC_PATH").unwrap_or_else(|_| "/usr/lib/arm-none-eabi/include".to_string());
 
         let cc2650_crate_root = PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap());
         let cc2650_crate_driverlib_root = cc2650_crate_root.join("src/driverlib").join(DRIVERLIB_ROOT);
@@ -365,19 +365,22 @@ impl DriverlibBuilder {
         ];
 
         let symbols = std::fs::read_to_string(&self.enabled_rom_fns_path).unwrap();
-        for symbol in symbols
+
+        let filtered_symbols: Vec<&str> = symbols
             .split('\n')
             .map(str::trim)
             .filter(|symbol| !EXCLUDED.contains(symbol))
-        {
-            let status = Command::new("llvm-objcopy")
-                .arg("--strip-symbol")
-                .arg(symbol)
-                .arg(&self.lib_norom_work_path)
-                .status()
-                .unwrap();
-            assert_eq!(status.code(), Some(0));
-        }
+            .collect();
+
+        let strip_list_path = self.out.join("strip_symbols.txt");
+        std::fs::write(&strip_list_path, filtered_symbols.join("\n")).unwrap();
+
+        let status = Command::new("llvm-objcopy")
+            .arg(format!("--strip-symbols={}", strip_list_path.display()))
+            .arg(&self.lib_norom_work_path)
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(0));
     }
 
     fn link_driverlib(&self) {
