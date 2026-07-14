@@ -412,12 +412,10 @@ impl<'a, T: Instance> UartFull<'a, T> {
     pub fn new(
         uart: Peri<'a, T>,
         config: Config,
+        comm_buf: &'static mut [u16],
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
     ) -> (Self, zerocopy_channel::Receiver<'static, NoopRawMutex, u16>) {
         Self::initialize(config);
-
-        static COMM_BUF: StaticCell<[u16; 512]> = StaticCell::new();
-        let comm_buf = COMM_BUF.init([0u16; 512]);
 
         static COMM_CH: StaticCell<zerocopy_channel::Channel<'static, NoopRawMutex, u16>> = StaticCell::new();
         let comm_ch = COMM_CH.init(zerocopy_channel::Channel::new(comm_buf));

@@ -6,6 +6,7 @@ use embassy_ti_cc2650::chip::peripherals;
 use embassy_ti_cc2650::uart::{Config, UartFull, UartFullRxReceiver, UartFullRxReceiverImpl, UartFullRxRunner};
 use embassy_ti_cc2650::{bind_interrupts, uart};
 use panic_probe as _;
+use static_cell::StaticCell;
 
 bind_interrupts!(struct Irqs {
     UART0 => uart::InterruptHandler<peripherals::UART0>;
@@ -18,6 +19,7 @@ async fn uart_task(mut runner: UartFullRxRunner<'static>) {
 
 const CHUNK_SIZE: usize = 66;
 const BAUDRATE: u32 = 115200;
+const UART_COMM_BUF_SIZE: usize = 1024;
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
@@ -25,7 +27,10 @@ async fn main(spawner: Spawner) {
     let mut config = Config::default();
     config.baudrate = BAUDRATE;
 
-    let (uart, rx_end) = UartFull::new(p.UART0, config, Irqs);
+    static COMM_BUF: StaticCell<[u16; UART_COMM_BUF_SIZE]> = StaticCell::new();
+    let comm_buf = COMM_BUF.init([0u16; UART_COMM_BUF_SIZE]);
+
+    let (uart, rx_end) = UartFull::new(p.UART0, config, comm_buf, Irqs);
     let mut uart_receiver = UartFullRxReceiverImpl::new(rx_end);
 
     // split() consumes uart.
