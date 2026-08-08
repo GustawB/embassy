@@ -11,7 +11,9 @@ mod ccfg;
 pub mod chip;
 pub mod driverlib;
 pub mod gpio;
+pub mod gpt;
 pub mod prcm;
+pub mod rtc;
 pub mod uart;
 pub mod udma;
 
@@ -68,6 +70,7 @@ macro_rules! define_peri {
             use super::paste;
             use core::ops::Deref;
 
+            #[allow(non_camel_case_types)]
             pub(super) struct $name(*const pac::$cc2650_crate::RegisterBlock);
             unsafe impl Send for $name {}
             unsafe impl Sync for $name {}
