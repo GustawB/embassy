@@ -25,5 +25,5 @@ default = ["rt"]
 ## Cortex-M runtime (enabled by default)
 rt = ["cc2650/rt"]
 full_udma_table= []
-defmt = ["cc2650/defmt"]
+defmt = []
 ieee = []

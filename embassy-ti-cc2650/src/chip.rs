@@ -1,4 +1,5 @@
 use crate::gpio::impl_pin;
+use crate::gpt::impl_gpt;
 use crate::rtc::impl_rtc;
 use crate::uart::impl_uart;
 pub use cc2650 as pac;
@@ -6,6 +7,7 @@ pub use cc2650 as pac;
 embassy_hal_internal::peripherals! {
     UART0,
     AON_RTC,
+    GPT0,
 
     P_00,
     P_01,
@@ -45,6 +47,8 @@ impl_uart!(UART0, UART0);
 
 impl_rtc!(AON_RTC, AON_RTC);
 
+impl_gpt!(GPT0, GPT0A);
+
 impl_pin!(P_00, 0);
 impl_pin!(P_01, 1);
 impl_pin!(P_02, 2);
@@ -78,4 +82,4 @@ impl_pin!(P_29, 29);
 impl_pin!(P_30, 30);
 impl_pin!(P_31, 31);
 
-embassy_hal_internal::interrupt_mod!(UART0, AON_RTC, UDMA);
+embassy_hal_internal::interrupt_mod!(UART0, AON_RTC, GPT0A, UDMA);
