@@ -5,8 +5,10 @@ use crate::chip::interrupt::typelevel::Interrupt;
 use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
+use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::task::Poll;
@@ -19,7 +21,7 @@ use paste::paste;
 // addres from said crate.
 define_peri!(Gpt0, gpt0, 1073807360);
 
-const CLOCK_FREQUENCY: u32 = 48000000;
+const CLOCK_FREQUENCY: u64 = 48000000;
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
@@ -29,13 +31,50 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
         let s = T::state();
+        let irq_mask = GPT0.mis.read();
 
-        GPT0.iclr.modify(|_r, w| w.tamcint().set_bit());
         unsafe {
-            driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
+            GPT0.iclr.modify(|_r, w| w.bits(u32::MAX));
         }
 
-        s.gpt_waker.wake();
+        // SAFETY: interrupts are enabled ONLY IF transaction is set.
+        let mut st = s.get_curr_transaction().unwrap();
+
+        if irq_mask.tatomis().bit_is_set() {
+            // Overflow happened, update overflow count and check it we met the limit.
+            st.overflow_count += 1;
+            s.set_new_transaction(st);
+            if st.overflow_count >= st.overflow_limit {
+                let curr_time = unsafe { driverlib::TimerValueGet(driverlib::GPT0_BASE, driverlib::TIMER_A) };
+                if curr_time >= st.final_deadline {
+                    unsafe {
+                        driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
+                    };
+                    s.transaction_finished.store(true, Ordering::Release);
+                    s.gpt_waker.wake();
+                    return;
+                }
+
+                unsafe {
+                    driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
+                };
+                GPT0.tamr.modify(|_r, w| w.tamie().en());
+            } else {
+                unsafe {
+                    driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
+                };
+            }
+        }
+
+        if irq_mask.tammis().bit_is_set() {
+            // Match interrupt fired, we finished the sleep transaction.
+            s.clear_transaction();
+            unsafe {
+                driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
+            };
+            s.transaction_finished.store(true, Ordering::Release);
+            s.gpt_waker.wake();
+        }
     }
 }
 
@@ -64,15 +103,58 @@ macro_rules! impl_gpt {
     };
 }
 
+#[derive(Clone, Copy)]
+pub(crate) struct SleepTransaction {
+    pub(crate) final_deadline: u32,
+    pub(crate) overflow_limit: u32,
+    pub(crate) overflow_count: u32,
+}
+
+impl SleepTransaction {
+    pub(crate) fn new(final_deadline: u32, overflow_limit: u32) -> Self {
+        Self {
+            final_deadline,
+            overflow_limit,
+            overflow_count: 0,
+        }
+    }
+}
+
+// SAFETY: State is used only in:
+// 1. current thread, if there are no sleeps scheduled
+// 2. In the irq handler, with the guarantee that there is no
+// ongoing update from the current thread.
 pub(crate) struct State {
     pub(crate) gpt_waker: AtomicWaker,
+    pub(crate) transaction_finished: AtomicBool,
+    curr_transaction: UnsafeCell<Option<SleepTransaction>>,
 }
+
+unsafe impl Sync for State {}
 
 impl State {
     pub(crate) const fn new() -> Self {
         Self {
             gpt_waker: AtomicWaker::new(),
+            transaction_finished: AtomicBool::new(false),
+            curr_transaction: UnsafeCell::new(None),
         }
+    }
+
+    pub(crate) fn set_new_transaction(&self, transaction: SleepTransaction) {
+        unsafe {
+            (*self.curr_transaction.get()) = Some(transaction);
+        };
+    }
+
+    pub(crate) fn clear_transaction(&self) {
+        unsafe {
+            (*self.curr_transaction.get()) = None;
+        };
+    }
+
+    pub(crate) fn get_curr_transaction(&self) -> Option<SleepTransaction> {
+        unsafe { *self.curr_transaction.get() }
     }
 }
 
@@ -92,7 +174,7 @@ impl<'a, T: Instance> Gpt<'a, T> {
 
             GPT0.tamr.modify(|_r, w| {
                 w.tacintd()
-                    .dis_to_intr() // Disable time-out event interrupts.
+                    .en_to_intr() // Enable time-out event interrupts.
                     .tamie()
                     .en() // Enable match interrupts.
                     .tacdir()
@@ -104,8 +186,8 @@ impl<'a, T: Instance> Gpt<'a, T> {
             // Stop GPT when debugger halts the program.
             GPT0.ctl.write(|w| w.tastall().set_bit());
 
-            // Enable match interrupt
-            GPT0.imr.modify(|_r, w| w.tamim().en());
+            // Enable mathc and time-out interrupts.
+            GPT0.imr.modify(|_r, w| w.tamim().en().tatoim().en());
         };
 
         T::Interrupt::unpend();
@@ -117,13 +199,23 @@ impl<'a, T: Instance> Gpt<'a, T> {
         }
     }
 
-    async fn sleep_internal(&self, sleep_in_hz: u32) {
+    async fn sleep_internal(&self, st: SleepTransaction) {
         unsafe {
             driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
             GPT0.tav.reset();
 
             //driverlib::TimerLoadSet(driverlib::GPT0_BASE, driverlib::TIMER_A);
-            driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, sleep_in_hz);
+            if st.overflow_limit == 0 {
+                // No overflow, we immediately want to seel for the specified amount.
+                driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
+                GPT0.tamr.modify(|_r, w| w.tamie().en());
+            } else {
+                // There is overflow, so we first need to sleep for u32::MAX for
+                // SleepTransaction::overflow_limit times.
+                driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
+                GPT0.tamr.modify(|_r, w| w.tamie().dis());
+            }
+            self.state.set_new_transaction(st);
 
             compiler_fence(Ordering::SeqCst);
             driverlib::TimerEnable(driverlib::GPT0_BASE, driverlib::TIMER_A);
@@ -131,25 +223,36 @@ impl<'a, T: Instance> Gpt<'a, T> {
 
         let _ = poll_fn(|cx| {
             self.state.gpt_waker.register(cx.waker());
-            let curr_time = unsafe { driverlib::TimerValueGet(driverlib::GPT0_BASE, driverlib::TIMER_A) };
-            if curr_time >= sleep_in_hz {
-                return Poll::Ready(());
+            match self
+                .state
+                .transaction_finished
+                .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
+            {
+                Ok(_) => Poll::Ready(()),
+                Err(_) => Poll::Pending,
             }
-            return Poll::Pending;
         })
         .await;
     }
 
     /// Sleeps for the specified amount of time in seconds.
     pub async fn sleep(&mut self, seconds: u32) {
-        let sleep_in_hz = seconds * CLOCK_FREQUENCY;
-        self.sleep_internal(sleep_in_hz).await;
+        let sleep_in_hz = (seconds as u64) * CLOCK_FREQUENCY;
+        let st = SleepTransaction::new(
+            (sleep_in_hz % (u32::MAX as u64)) as u32,
+            (sleep_in_hz / (u32::MAX as u64)) as u32,
+        );
+        self.sleep_internal(st).await;
     }
 
     /// Sleeps for the specified amount of time in milliseconds.
     pub async fn sleep_millis(&mut self, milliseconds: u32) {
-        let sleep_in_hz = milliseconds * CLOCK_FREQUENCY / 1000;
-        self.sleep_internal(sleep_in_hz).await;
+        let sleep_in_hz = (milliseconds as u64) * CLOCK_FREQUENCY / 1000;
+        let st = SleepTransaction::new(
+            (sleep_in_hz % (u32::MAX as u64)) as u32,
+            (sleep_in_hz / (u32::MAX as u64)) as u32,
+        );
+        self.sleep_internal(st).await;
     }
 }
 
