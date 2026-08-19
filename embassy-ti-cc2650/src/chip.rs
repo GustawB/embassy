@@ -1,5 +1,6 @@
 use crate::gpio::impl_pin;
 use crate::gpt::impl_gpt;
+#[cfg(not(feature = "embassy-time"))]
 use crate::rtc::impl_rtc;
 use crate::uart::impl_uart;
 pub use cc2650 as pac;
@@ -45,6 +46,7 @@ embassy_hal_internal::peripherals! {
 
 impl_uart!(UART0, UART0);
 
+#[cfg(not(feature = "embassy-time"))]
 impl_rtc!(AON_RTC, AON_RTC);
 
 impl_gpt!(GPT0, GPT0A);

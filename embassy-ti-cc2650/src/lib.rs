@@ -13,7 +13,10 @@ pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
 pub mod prcm;
+#[cfg(not(feature = "embassy-time"))]
 pub mod rtc;
+#[cfg(feature = "embassy-time")]
+pub mod time_driver;
 pub mod uart;
 pub mod udma;
 
@@ -110,6 +113,9 @@ pub fn init() -> Peripherals {
     prcm.enable_domains(prcm::PowerDomains::empty().peripherals().serial());
 
     prcm.enable_clocks(prcm::Clocks::empty().gpio().uart().gpt().dma().crypto().i2c());
+
+    #[cfg(feature = "embassy-time")]
+    time_driver::init();
 
     Peripherals::take()
 }

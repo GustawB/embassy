@@ -57,6 +57,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let combined_time = combine_time(curr_secs, curr_subsecs);
 
         if combined_time > combined_deadline {
+            unsafe {
+                driverlib::AONRTCChannelDisable(driverlib::AON_RTC_CH0);
+            };
             s.clear_next_deadline();
             s.rtc_waker.wake();
         } else if next_deadline.secs < curr_secs + 0x10000 {
@@ -162,9 +165,6 @@ impl<'a, T: Instance> Rtc<'a, T> {
             AON_RTC.sec.reset();
             AON_RTC.subsec.reset();
 
-            // Enable event channel 0
-            driverlib::AONRTCChannelEnable(driverlib::AON_RTC_CH0);
-            // Enable AON_RTC module
             driverlib::AONRTCEnable();
 
             if !interrupts_disabled {
@@ -188,6 +188,10 @@ impl<'a, T: Instance> Rtc<'a, T> {
         };
 
         self.state.set_next_deadline(next_deadline);
+
+        unsafe {
+            driverlib::AONRTCChannelEnable(driverlib::AON_RTC_CH0);
+        };
 
         compiler_fence(Ordering::SeqCst);
 
