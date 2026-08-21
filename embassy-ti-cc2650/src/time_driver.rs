@@ -13,6 +13,22 @@ use embassy_hal_internal::interrupt::InterruptExt;
 use embassy_time_driver::Driver;
 use embassy_time_queue_utils::Queue;
 
+// ti-cc2650 has a 70-bit RTC timer, with 64 bits accessible.
+// This gives 32 bits for seconds, and 32 bits for "subseconds".
+// However, the compare register we use to generate events
+// has only 32 bits (16:16). So, the idea is that if we want
+// to wait for longer than will fit in this compare register,
+// we set it to u32::MAX. Then, executing SYNC after wakeup
+// in the interrupt handler should overflow the part against
+// which the compare register does the comparison (16 lower bits of secs:16 upper bits of subsecs).
+// Then, if the time until we want to sleep will "fit" in the current timeframe
+// (we compare it with the full 64bit time), we set the compare register to the expected value.
+// Otherwise, we set the compare register to u32::MAX again.
+//
+// The above is the general idea; with embassy-time, we have to account for
+// scheduling loop. Luckily, this is simple as it's just a matter
+// of updating the compare register with the new value.
+
 // 1074339840 is the start address of registers for AON_RTC.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
@@ -34,6 +50,7 @@ fn decombine_time(timestamp: u64) -> (u32, u32) {
     )
 }
 
+/// Used to store the information about the next closest wake up event.
 #[derive(Clone, Copy)]
 pub(crate) struct Deadline {
     pub(crate) secs: u32,
@@ -50,16 +67,10 @@ impl RtcTimeDriver {
         unsafe {
             let interrupts_disabled = driverlib::IntMasterDisable();
             driverlib::AONRTCDisable();
-            // Setup wake-up (WU) events
+            // Setup wake-up (WU) event
             driverlib::AONRTCEventClear(driverlib::AON_RTC_CH0);
-            driverlib::AONRTCEventClear(driverlib::AON_RTC_CH1);
-            driverlib::AONRTCEventClear(driverlib::AON_RTC_CH2);
             driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU0, driverlib::AON_EVENT_RTC_CH0);
-            driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU1, driverlib::AON_EVENT_RTC_CH1);
-            driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU2, driverlib::AON_EVENT_RTC_CH2);
-            driverlib::AONRTCCombinedEventConfig(
-                driverlib::AON_RTC_CH0, // | driverlib::AON_RTC_CH1 | driverlib::AON_RTC_CH2,
-            );
+            driverlib::AONRTCCombinedEventConfig(driverlib::AON_RTC_CH0);
 
             AON_RTC.sec.reset();
             AON_RTC.subsec.reset();
@@ -110,7 +121,8 @@ impl RtcTimeDriver {
 
     fn set_alarm(&self, cs: &CriticalSection, at: u64) -> bool {
         let curr_time = self.now();
-        if at <= curr_time {
+        // TI-TRM 14.2.3.1
+        if at <= curr_time + 4 {
             // In theory, cc2650 RTC should fire an event for timestamps
             // that are at most 1 second past. However, there is no benefit from scheduling "past" events.
             // It's better to cancel "past" events as the events that are now "future" might become "past"

@@ -16,6 +16,10 @@ use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
+// Simple RTC driver that can be used if embassy-time is not enabled only.
+// It is advised to use embassy-time though.
+// For a general description see time_driver.rs, logic is almost the same.
+
 // 1074339840 is the start address of registers for AON_RTC.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
@@ -45,8 +49,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             driverlib::AONRTCEventClear(driverlib::AON_RTC_CH0);
         };
 
-        // This will wait for at least one 32khz tick.
-        // Add u32::MAX to that and we should overflow
         AON_RTC.sync.read().bits();
 
         let next_deadline = s
@@ -151,16 +153,10 @@ impl<'a, T: Instance> Rtc<'a, T> {
         unsafe {
             let interrupts_disabled = driverlib::IntMasterDisable();
             driverlib::AONRTCDisable();
-            // Setup wake-up (WU) events
+            // Setup wake-up (WU) event
             driverlib::AONRTCEventClear(driverlib::AON_RTC_CH0);
-            driverlib::AONRTCEventClear(driverlib::AON_RTC_CH1);
-            driverlib::AONRTCEventClear(driverlib::AON_RTC_CH2);
             driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU0, driverlib::AON_EVENT_RTC_CH0);
-            driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU1, driverlib::AON_EVENT_RTC_CH1);
-            driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU2, driverlib::AON_EVENT_RTC_CH2);
-            driverlib::AONRTCCombinedEventConfig(
-                driverlib::AON_RTC_CH0, // | driverlib::AON_RTC_CH1 | driverlib::AON_RTC_CH2,
-            );
+            driverlib::AONRTCCombinedEventConfig(driverlib::AON_RTC_CH0);
 
             AON_RTC.sec.reset();
             AON_RTC.subsec.reset();
