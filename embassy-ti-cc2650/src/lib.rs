@@ -11,7 +11,12 @@ mod ccfg;
 pub mod chip;
 pub mod driverlib;
 pub mod gpio;
+pub mod gpt;
 pub mod prcm;
+#[cfg(not(feature = "embassy-time"))]
+pub mod rtc;
+#[cfg(feature = "embassy-time")]
+pub mod time_driver;
 pub mod uart;
 pub mod udma;
 
@@ -68,6 +73,7 @@ macro_rules! define_peri {
             use super::paste;
             use core::ops::Deref;
 
+            #[allow(non_camel_case_types)]
             pub(super) struct $name(*const pac::$cc2650_crate::RegisterBlock);
             unsafe impl Send for $name {}
             unsafe impl Sync for $name {}
@@ -107,6 +113,9 @@ pub fn init() -> Peripherals {
     prcm.enable_domains(prcm::PowerDomains::empty().peripherals().serial());
 
     prcm.enable_clocks(prcm::Clocks::empty().gpio().uart().gpt().dma().crypto().i2c());
+
+    #[cfg(feature = "embassy-time")]
+    time_driver::init();
 
     Peripherals::take()
 }
