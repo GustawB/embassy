@@ -1,3 +1,5 @@
+use ti_cc2650_pac::PRCM::vals;
+
 use crate::driverlib;
 use crate::pac;
 
@@ -56,12 +58,12 @@ impl Into<u32> for PowerDomains {
 }
 
 pub struct Prcm {
-    prcm: pac::PRCM,
+    prcm: pac::PRCM::PRCM,
 }
 
 impl Prcm {
-    pub fn new(prcm: pac::PRCM) -> Self {
-        Self { prcm }
+    pub fn new() -> Self {
+        Self { prcm: pac::PRCM }
     }
 
     #[inline]
@@ -88,7 +90,7 @@ impl Prcm {
 
     #[inline]
     pub fn rfc_modesel_configure(&self) {
-        self.prcm.rfcmodesel.write(|w| w.curr().mode5());
+        self.prcm.RFCMODESEL().write(|w| w.set_CURR(vals::CURR::MODE5));
     }
 }
 
@@ -148,93 +150,96 @@ impl Clocks {
 pub(crate) struct Clock;
 
 impl Clock {
-    fn reload_clock_controller(clkloadctl: &pac::prcm::CLKLOADCTL) {
-        // Unfortunately, static inline fns.
-        // driverlib::PRCMLoadSet();
-        // while !driverlib::PRCMLoadGet() {}
-
-        // Load settings into CLKCTRL and wait for LOAD_DONE
-        clkloadctl.modify(|_r, w| w.load().set_bit());
-        loop {
-            if clkloadctl.read().load_done().bit_is_set() {
-                break;
-            }
-        }
-    }
-
-    pub(crate) fn enable_clocks(prcm: &pac::prcm::RegisterBlock, clocks: Clocks) {
+    pub(crate) fn enable_clocks(prcm: &pac::PRCM::PRCM, clocks: Clocks) {
         if clocks.gpio {
-            prcm.gpioclkgr.write(|w| w.clk_en().set_bit());
-            prcm.gpioclkgs.write(|w| w.clk_en().set_bit());
-            prcm.gpioclkgds.write(|w| w.clk_en().set_bit());
+            prcm.GPIOCLKGR().write(|w| w.set_CLK_EN(true));
+            prcm.GPIOCLKGS().write(|w| w.set_CLK_EN(true));
+            prcm.GPIOCLKGDS().write(|w| w.set_CLK_EN(true));
         }
         if clocks.uart {
-            prcm.uartclkgr.write(|w| w.clk_en().set_bit());
-            prcm.uartclkgs.write(|w| w.clk_en().set_bit());
-            prcm.uartclkgds.write(|w| w.clk_en().set_bit());
+            prcm.UARTCLKGR().write(|w| w.set_CLK_EN(true));
+            prcm.UARTCLKGS().write(|w| w.set_CLK_EN(true));
+            prcm.UARTCLKGDS().write(|w| w.set_CLK_EN(true));
         }
         if clocks.gpt {
-            prcm.gptclkgr.write(|w| w.clk_en().gpt0());
-            prcm.gptclkgs.write(|w| w.clk_en().gpt0());
-            prcm.gptclkgds.write(|w| w.clk_en().gpt0());
+            prcm.GPTCLKGR().write(|w| w.set_CLK_EN(vals::GPTCLKGR_CLK_EN::GPT0));
+            prcm.GPTCLKGS().write(|w| w.set_CLK_EN(vals::GPTCLKGS_CLK_EN::GPT0));
+            prcm.GPTCLKGDS().write(|w| w.set_CLK_EN(vals::GPTCLKGDS_CLK_EN::GPT0));
         }
         if clocks.dma || clocks.crypto {
-            prcm.secdmaclkgr
-                .write(|w| w.dma_clk_en().bit(clocks.dma).crypto_clk_en().bit(clocks.crypto));
-            prcm.secdmaclkgs
-                .write(|w| w.dma_clk_en().bit(clocks.dma).crypto_clk_en().bit(clocks.crypto));
-            prcm.secdmaclkgds
-                .write(|w| w.dma_clk_en().bit(clocks.dma).crypto_clk_en().bit(clocks.crypto));
+            prcm.SECDMACLKGR().write(|w| {
+                w.set_DMA_CLK_EN(clocks.dma);
+                w.set_CRYPTO_CLK_EN(clocks.crypto);
+            });
+            prcm.SECDMACLKGS().write(|w| {
+                w.set_DMA_CLK_EN(clocks.dma);
+                w.set_CRYPTO_CLK_EN(clocks.crypto);
+            });
+            prcm.SECDMACLKGDS().write(|w| {
+                w.set_DMA_CLK_EN(clocks.dma);
+                w.set_CRYPTO_CLK_EN(clocks.crypto);
+            });
         }
 
         if clocks.rfc {
-            prcm.rfcclkg.write(|w| w.clk_en().set_bit());
+            prcm.RFCCLKG().write(|w| w.set_CLK_EN(true));
         }
         if clocks.i2c {
-            prcm.i2cclkgr.write(|w| w.clk_en().set_bit());
+            prcm.I2CCLKGR().write(|w| w.set_CLK_EN(true));
             // prcm.i2cclkgs.write(|w| w.clk_en().set_bit());
             // prcm.i2cclkgds.write(|w| w.clk_en().set_bit());
         }
 
-        Self::reload_clock_controller(&prcm.clkloadctl);
+        // Load settings into CLKCTRL and wait for LOAD_DONE
+        prcm.CLKLOADCTL().modify(|w| w.set_LOAD(true));
+        while !prcm.CLKLOADCTL().read().LOAD_DONE() {}
     }
 
     // TODO: why this feature? This comes from wprzytula code,
     // I will come back to this when I start working on the radio.
     #[cfg(feature = "ieee")]
-    pub(crate) fn disable_clocks(prcm: &pac::prcm::RegisterBlock, clocks: Clocks) {
+    pub(crate) fn disable_clocks(prcm: &pac::PRCM::PRCM, clocks: Clocks) {
         if clocks.gpio {
-            prcm.gpioclkgr.write(|w| w.clk_en().clear_bit());
-            prcm.gpioclkgs.write(|w| w.clk_en().clear_bit());
-            prcm.gpioclkgds.write(|w| w.clk_en().clear_bit());
+            prcm.GPIOCLKGR().write(|w| w.set_CLK_EN(false));
+            prcm.GPIOCLKGS().write(|w| w.set_CLK_EN(false));
+            prcm.GPIOCLKGDS().write(|w| w.set_CLK_EN(false));
         }
         if clocks.uart {
-            prcm.uartclkgr.write(|w| w.clk_en().clear_bit());
-            prcm.uartclkgs.write(|w| w.clk_en().clear_bit());
-            prcm.uartclkgds.write(|w| w.clk_en().clear_bit());
+            prcm.UARTCLKGR().write(|w| w.set_CLK_EN(false));
+            prcm.UARTCLKGS().write(|w| w.set_CLK_EN(false));
+            prcm.UARTCLKGDS().write(|w| w.set_CLK_EN(false));
         }
         if clocks.gpt {
-            prcm.gptclkgr.write(|w| w);
-            prcm.gptclkgs.write(|w| w);
-            prcm.gptclkgds.write(|w| w);
+            prcm.GPTCLKGR().write(|w| w.set_CLK_EN(vals::GPTCLKGR_CLK_EN::DIS));
+            prcm.GPTCLKGS().write(|w| w.set_CLK_EN(vals::GPTCLKGS_CLK_EN::DIS));
+            prcm.GPTCLKGDS().write(|w| w.set_CLK_EN(vals::GPTCLKGDS_CLK_EN::DIS));
         }
         if clocks.dma || clocks.crypto {
-            prcm.secdmaclkgr
-                .write(|w| w.dma_clk_en().bit(!clocks.dma).crypto_clk_en().bit(!clocks.crypto));
-            prcm.secdmaclkgs
-                .write(|w| w.dma_clk_en().bit(!clocks.dma).crypto_clk_en().bit(!clocks.crypto));
-            prcm.secdmaclkgds
-                .write(|w| w.dma_clk_en().bit(!clocks.dma).crypto_clk_en().bit(!clocks.crypto));
+            prcm.SECDMACLKGR().write(|w| {
+                w.set_DMA_CLK_EN(!clocks.dma);
+                w.set_CRYPTO_CLK_EN(!clocks.crypto);
+            });
+            prcm.SECDMACLKGS().write(|w| {
+                w.set_DMA_CLK_EN(!clocks.dma);
+                w.set_CRYPTO_CLK_EN(!clocks.crypto);
+            });
+            prcm.SECDMACLKGDS().write(|w| {
+                w.set_DMA_CLK_EN(!clocks.dma);
+                w.set_CRYPTO_CLK_EN(!clocks.crypto);
+            });
         }
 
         if clocks.rfc {
-            prcm.rfcclkg.write(|w| w.clk_en().clear_bit());
+            prcm.RFCCLKG().write(|w| w.set_CLK_EN(false));
         }
         if clocks.i2c {
-            prcm.i2cclkgr.write(|w| w.clk_en().clear_bit());
-            // prcm.i2cclkgs.write(|w| w.clk_en().clear_bit());
-            // prcm.i2cclkgds.write(|w| w.clk_en().clear_bit());
+            prcm.I2CCLKGR().write(|w| w.set_CLK_EN(false));
+            // prcm.i2cclkgs.write(|w| w.clk_en().set_bit());
+            // prcm.i2cclkgds.write(|w| w.clk_en().set_bit());
         }
-        Self::reload_clock_controller(&prcm.clkloadctl);
+
+        // Load settings into CLKCTRL and wait for LOAD_DONE
+        prcm.CLKLOADCTL().modify(|w| w.set_LOAD(true));
+        while !prcm.CLKLOADCTL().read().LOAD_DONE() {}
     }
 }
