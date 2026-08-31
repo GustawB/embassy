@@ -1,3 +1,5 @@
+use crate::pac;
+
 /// This module defines CCFG structure and its default values, and allocates the CCFG structure
 /// in its corresponding ELF section (.ccfg). If linker cooperates (i.e., defines .ccfg
 /// as the appropriate flash region), then this makes CCFG flashed together with Tock.
@@ -2456,19 +2458,18 @@ mod ccfg_data {
 
 #[allow(unused)]
 pub(crate) struct Ccfg {
-    ccfg: cc2650::CCFG,
+    ccfg: pac::CCFG::CCFG,
 }
 
 impl Ccfg {
     #[allow(unused)]
-    pub(crate) fn new(ccfg: cc2650::CCFG) -> Self {
-        Self { ccfg }
+    pub(crate) fn new() -> Self {
+        Self { ccfg: pac::CCFG }
     }
 
     #[allow(unused)]
     pub(crate) fn ieee_mac(&self) -> Option<u64> {
-        let mac = ((self.ccfg.ieee_mac_1.read().addr().bits() as u64) << 32)
-            | self.ccfg.ieee_mac_0.read().addr().bits() as u64;
+        let mac = ((self.ccfg.IEEE_MAC_1().read().ADDR() as u64) << 32) | self.ccfg.IEEE_MAC_0().read().ADDR() as u64;
 
         // If mac has all bits set to 1, then it's unset.
         (mac != (!0)).then_some(mac)

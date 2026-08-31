@@ -1,17 +1,10 @@
 #![macro_use]
 
-use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
 use embassy_hal_internal::Peri;
 use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::impl_peripheral;
-use paste::paste;
-
-// 1073881088 is the start address of registers for GPIO.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Gpio, gpio, 1073881088);
 
 /// Pull setting for an input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,10 +112,6 @@ impl<'d> GPIOPin<'d> {
         Self { pin: pin.into() }
     }
 
-    fn pin_mask(&self) -> u32 {
-        1 << self.pin.pin()
-    }
-
     fn make_input(&mut self, mode: Pull) {
         unsafe {
             driverlib::IOCPinTypeGpioInput(self.pin.pin());
@@ -137,15 +126,19 @@ impl<'d> GPIOPin<'d> {
     }
 
     fn set_high(&self) {
-        GPIO.doutset31_0.write(|w| unsafe { w.bits(self.pin_mask()) });
+        unsafe {
+            driverlib::GPIO_setDio(self.pin.pin());
+        };
     }
 
     fn set_low(&self) {
-        GPIO.doutclr31_0.write(|w| unsafe { w.bits(self.pin_mask()) });
+        unsafe {
+            driverlib::GPIO_clearDio(self.pin.pin());
+        };
     }
 
     fn is_set_high(&self) -> bool {
-        GPIO.dout31_0.read().bits() & self.pin_mask() != 0
+        pac::GPIO.DOUT31_0().read().0 & (1 << self.pin.pin()) != 0
     }
 
     fn is_set_low(&self) -> bool {
@@ -153,7 +146,7 @@ impl<'d> GPIOPin<'d> {
     }
 
     fn is_high(&self) -> bool {
-        GPIO.din31_0.read().bits() & self.pin_mask() != 0
+        unsafe { driverlib::GPIO_readDio(self.pin.pin()) != 0 }
     }
 
     fn is_low(&self) -> bool {

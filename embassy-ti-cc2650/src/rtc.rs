@@ -9,21 +9,14 @@ use core::task::Poll;
 
 use crate::chip::interrupt;
 use crate::chip::interrupt::typelevel::Interrupt;
-use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
-use paste::paste;
 
 // Simple RTC driver that can be used if embassy-time is not enabled only.
 // It is advised to use embassy-time though.
 // For a general description see time_driver.rs, logic is almost the same.
-
-// 1074339840 is the start address of registers for AON_RTC.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Aon_rtc, aon_rtc, 1074339840);
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
@@ -49,7 +42,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             driverlib::AONRTCEventClear(driverlib::AON_RTC_CH0);
         };
 
-        AON_RTC.sync.read().bits();
+        T::regs().SYNC().read();
 
         let next_deadline = s
             .get_next_deadline()
@@ -75,6 +68,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 }
 
 pub(crate) trait SealedInstance {
+    fn regs() -> pac::AON_RTC::AON_RTC;
     fn state() -> &'static State;
 }
 
@@ -86,8 +80,11 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
 }
 
 macro_rules! impl_rtc {
-    ($type:ident, $irq:ident) => {
+    ($type:ident, $pac_type:ident, $irq:ident) => {
         impl crate::rtc::SealedInstance for peripherals::$type {
+            fn regs() -> pac::AON_RTC::AON_RTC {
+                pac::$pac_type
+            }
             fn state() -> &'static crate::rtc::State {
                 static STATE: crate::rtc::State = crate::rtc::State::new();
                 &STATE
@@ -150,6 +147,7 @@ impl<'a, T: Instance> Rtc<'a, T> {
         aon_rtc: Peri<'a, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
     ) -> Self {
+        let r = T::regs();
         unsafe {
             let interrupts_disabled = driverlib::IntMasterDisable();
             driverlib::AONRTCDisable();
@@ -158,8 +156,8 @@ impl<'a, T: Instance> Rtc<'a, T> {
             driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU0, driverlib::AON_EVENT_RTC_CH0);
             driverlib::AONRTCCombinedEventConfig(driverlib::AON_RTC_CH0);
 
-            AON_RTC.sec.reset();
-            AON_RTC.subsec.reset();
+            r.SEC().write(|w| w.set_VALUE(0));
+            r.SUBSEC().write(|w| w.set_VALUE(0));
 
             driverlib::AONRTCEnable();
 
