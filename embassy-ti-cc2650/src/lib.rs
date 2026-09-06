@@ -15,6 +15,7 @@ pub mod gpt;
 pub mod prcm;
 #[cfg(not(feature = "embassy-time"))]
 pub mod rtc;
+pub mod scif_driver;
 #[cfg(feature = "embassy-time")]
 pub mod time_driver;
 pub mod uart;
