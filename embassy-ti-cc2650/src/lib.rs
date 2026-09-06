@@ -13,6 +13,7 @@ pub mod gpio;
 pub mod gpt;
 pub mod prcm;
 pub mod rtc;
+pub mod scif_driver;
 mod time_driver;
 pub mod uart;
 pub mod udma;
