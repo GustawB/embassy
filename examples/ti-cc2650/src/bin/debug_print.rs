@@ -2,15 +2,9 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_ti_cc2650::chip::peripherals;
 use embassy_ti_cc2650::debug_print::debug_print;
-use embassy_ti_cc2650::{bind_interrupts, uart};
 use embassy_time::Timer;
 use panic_probe as _;
-
-bind_interrupts!(struct Irqs {
-    UART0 => uart::InterruptHandler<peripherals::UART0>;
-});
 
 #[embassy_executor::task]
 async fn slow_task() -> ! {
