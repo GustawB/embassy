@@ -183,8 +183,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let r = T::regs();
         let s = T::state();
 
-        let skibidi = crate::pac::UART0;
-
         // Masked Interrupt Status
         let mis = r.MIS().read();
 

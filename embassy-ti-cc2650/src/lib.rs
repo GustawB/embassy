@@ -9,6 +9,7 @@ use crate::uart::UartPinConfig;
 
 mod ccfg;
 pub mod chip;
+pub mod debug_print;
 pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
@@ -16,6 +17,7 @@ pub mod prcm;
 #[cfg(not(feature = "embassy-time"))]
 pub mod rtc;
 pub mod scif_driver;
+pub mod scif_uart_emulator;
 #[cfg(feature = "embassy-time")]
 pub mod time_driver;
 pub mod uart;
@@ -82,6 +84,8 @@ pub fn init() -> Peripherals {
 
     #[cfg(feature = "embassy-time")]
     time_driver::init();
+
+    scif_uart_emulator::SCIF_UART.initialize();
 
     peripherals
 }
