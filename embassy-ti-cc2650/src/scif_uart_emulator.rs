@@ -129,7 +129,8 @@ const fn SCIF_TASK_DATA() -> &'static SCIFTaskData {
 static AUX_TO_INDEX_TO_MCU_IOCFG_OFFSET_LUT: [u8; 0x10] =
     [120, 116, 112, 108, 104, 100, 96, 92, 28, 24, 20, 16, 12, 8, 4, 0];
 
-/** \brief Look-up table of data structure information for each task
+/*
+ * Look-up table of data structure information for each task
  *
  * There is one entry per data structure (\c cfg, \c input, \c output and \c state) per task:
  * - [31:20] Data structure size (number of 16-bit words)
@@ -141,7 +142,8 @@ static SCIF_TASK_DATA_STRUCT_INFO_LUT: [u32; 0x4] = [
     0x00000000, 0x300010E6, 0x00000000, 0x002016E6, // UART Emulator
 ];
 
-/** \brief Initilializes task resource hardware dependencies
+/*
+ * Initilializes task resource hardware dependencies
  *
  * This function is called by the internal driver initialization function, \ref scifInit().
  */
@@ -161,13 +163,11 @@ impl ScifUart {
         Self { scif: Scif::new() }
     }
 
-    /** \brief Sets the UART baud rate
+    /*
+     * Sets the UART baud rate
      *
      * This function must be called to start baud rate generation before or after starting the UART
      * emulation task. This function can be called during operation to change the baud rate on-the-fly.
-     *
-     * \param[in]      baudRate
-     *     The new baud rate (e.g. 115200 or 9600). 0 disables baud rate generation.
      */
     pub(crate) fn uart_set_baud_rate(&self, baud_rate: u32) {
         // Start baud rate generation?
@@ -274,18 +274,11 @@ impl ScifUart {
         }
     }
 
-    /** \brief Transmits two characters
+    /*
+     * Transmits two characters
      *
      * This function must not be called when the TX FIFO is full. Both characters use only one TX FIFO cell.
-     * Calling this function when the FIFO is full will cause overflow, without warning. The number of free cells in the FIFO is:
-     * \code
-     * SCIF_UART_TX_FIFO_MAX_COUNT - scifUartGetTxFifoCount()
-     * \endcode
-     *
-     * \param[in]      c1
-     *     The first character to transmit
-     * \param[in]      c2
-     *     The second character to transmit
+     * Calling this function when the FIFO is full will cause overflow, without warning.
      */
     pub(crate) unsafe fn scif_uart_tx_put_two_chars(c1: u8, c2: u8) {
         // Put the character
@@ -299,21 +292,13 @@ impl ScifUart {
             tx_head = 0;
         }
         safe_packed_ref!(SCIF_TASK_DATA().uart_emulator.state.tx_head).set(tx_head);
-    } // scifUartTxPutTwoChars
+    }
 
-    /** \brief Transmits the specified number of character
+    /*
+     * Transmits the specified number of character
      *
      * This function must not be called with count higher than the number of free entries in the TX FIFO.
-     * Calling this function with too high count will cause overflow, without warning. The number of free
-     * entries in the FIFO is:
-     * \code
-     * SCIF_UART_TX_FIFO_MAX_COUNT - scifUartGetTxFifoCount()
-     * \endcode
-     *
-     * \param[in,out]  *pBuffer
-     *     Pointer to the character source buffer
-     * \param[in]      count
-     *     Number of characters to put
+     * Calling this function with too high count will cause overflow, without warning.
      */
     pub(crate) unsafe fn scif_uart_tx_put_chars(buff: &[u8], count: u32) {
         let mut entry: u16;
