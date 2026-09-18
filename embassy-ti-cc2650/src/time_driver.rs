@@ -3,10 +3,8 @@ use core::cell::RefCell;
 use core::task::Waker;
 
 use crate::chip::interrupt;
-use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
-use paste::paste;
 
 use critical_section::{CriticalSection, Mutex};
 use embassy_hal_internal::interrupt::InterruptExt;
@@ -29,13 +27,12 @@ use embassy_time_queue_utils::Queue;
 // scheduling loop. Luckily, this is simple as it's just a matter
 // of updating the compare register with the new value.
 
-// 1074339840 is the start address of registers for AON_RTC.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Aon_rtc, aon_rtc, 1074339840);
-
 // In hz.
 const CLOCK_FREQUENCY: u64 = 32768;
+
+fn rtc() -> pac::AON_RTC::AON_RTC {
+    pac::AON_RTC
+}
 
 #[inline]
 fn combine_time(secs: u32, subsecs: u32) -> u64 {
@@ -72,8 +69,8 @@ impl RtcTimeDriver {
             driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU0, driverlib::AON_EVENT_RTC_CH0);
             driverlib::AONRTCCombinedEventConfig(driverlib::AON_RTC_CH0);
 
-            AON_RTC.sec.reset();
-            AON_RTC.subsec.reset();
+            rtc().SEC().write(|w| w.set_VALUE(0));
+            rtc().SUBSEC().write(|w| w.set_VALUE(0));
 
             driverlib::AONRTCEnable();
 
@@ -94,7 +91,7 @@ impl RtcTimeDriver {
 
         // This will wait for at least one 32khz tick.
         // Add u32::MAX to that and we should overflow
-        AON_RTC.sync.read().bits();
+        rtc().SYNC().read();
 
         critical_section::with(|cs| {
             let next_deadline = self.next_deadline.borrow(cs).get();

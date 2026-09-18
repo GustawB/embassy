@@ -2,7 +2,6 @@
 
 use crate::chip::interrupt;
 use crate::chip::interrupt::typelevel::Interrupt;
-use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
 use core::cell::UnsafeCell;
@@ -14,12 +13,7 @@ use core::sync::atomic::compiler_fence;
 use core::task::Poll;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
-use paste::paste;
-
-// 1073807360 is the start address of registers for GPT0.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Gpt0, gpt0, 1073807360);
+use ti_cc2650_pac::GPT0::vals;
 
 const CLOCK_FREQUENCY: u64 = 48000000;
 
@@ -30,17 +24,19 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
+        let r = T::regs();
         let s = T::state();
-        let irq_mask = GPT0.mis.read();
+        let irq_mask = r.MIS().read();
 
-        unsafe {
-            GPT0.iclr.modify(|_r, w| w.bits(u32::MAX));
-        }
+        r.ICLR().modify(|w| {
+            w.set_TATOCINT(true);
+            w.set_TAMCINT(true);
+        });
 
         // SAFETY: interrupts are enabled ONLY IF transaction is set.
         let mut st = s.get_curr_transaction().unwrap();
 
-        if irq_mask.tatomis().bit_is_set() {
+        if irq_mask.TATOMIS() {
             // Overflow happened, update overflow count and check it we met the limit.
             st.overflow_count += 1;
             s.set_new_transaction(st);
@@ -58,7 +54,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
                 unsafe {
                     driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
                 };
-                GPT0.tamr.modify(|_r, w| w.tamie().en());
+                r.TAMR().modify(|w| w.set_TAMIE(vals::TAMIE::EN));
             } else {
                 unsafe {
                     driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
@@ -66,7 +62,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             }
         }
 
-        if irq_mask.tammis().bit_is_set() {
+        if irq_mask.TAMMIS() {
             // Match interrupt fired, we finished the sleep transaction.
             s.clear_transaction();
             unsafe {
@@ -79,6 +75,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 }
 
 pub(crate) trait SealedInstance {
+    fn regs() -> pac::GPT0::GPT0;
     fn state() -> &'static State;
 }
 
@@ -90,8 +87,11 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
 }
 
 macro_rules! impl_gpt {
-    ($type:ident, $irq:ident) => {
+    ($type:ident, $pac_type:ident, $irq:ident) => {
         impl crate::gpt::SealedInstance for peripherals::$type {
+            fn regs() -> pac::GPT0::GPT0 {
+                pac::$pac_type
+            }
             fn state() -> &'static crate::gpt::State {
                 static STATE: crate::gpt::State = crate::gpt::State::new();
                 &STATE
@@ -159,6 +159,7 @@ impl State {
 }
 
 pub struct Gpt<'a, T: Instance> {
+    r: pac::GPT0::GPT0,
     state: &'static State,
     _peri: Peri<'a, T>,
 }
@@ -168,32 +169,31 @@ impl<'a, T: Instance> Gpt<'a, T> {
         gpt: Peri<'a, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
     ) -> Self {
+        let r = T::regs();
         unsafe {
             driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
-            GPT0.cfg.write(|w| w.cfg()._32bit_timer());
+            r.CFG().modify(|w| w.set_CFG(vals::CFG::_32BIT_TIMER));
 
-            GPT0.tamr.modify(|_r, w| {
-                w.tacintd()
-                    .en_to_intr() // Enable time-out event interrupts.
-                    .tamie()
-                    .en() // Enable match interrupts.
-                    .tacdir()
-                    .up() // Count up.
-                    .tamr()
-                    .periodic() // Run in periodic mode.
+            r.TAMR().modify(|w| {
+                w.set_TACINTD(vals::TACINTD::EN_TO_INTR); // Enable time-out event interrupts.
+                w.set_TAMIE(vals::TAMIE::EN); // Enable match interrupts.
+                w.set_TACDIR(vals::TACDIR::UP); // Count up.
+                w.set_TAMR(vals::TAMR::PERIODIC); // Run in periodic mode.
             });
 
             // Stop GPT when debugger halts the program.
-            GPT0.ctl.write(|w| w.tastall().set_bit());
+            r.CTL().modify(|w| w.set_TASTALL(vals::TASTALL::EN));
 
             // Enable mathc and time-out interrupts.
-            GPT0.imr.modify(|_r, w| w.tamim().en().tatoim().en());
+            r.IMR().modify(|w| w.set_TAMIM(vals::TAMIM::EN));
+            r.IMR().modify(|w| w.set_TATOIM(vals::TATOIM::EN));
         };
 
         T::Interrupt::unpend();
         unsafe { T::Interrupt::enable() };
 
         Gpt {
+            r: T::regs(),
             state: T::state(),
             _peri: gpt,
         }
@@ -202,18 +202,18 @@ impl<'a, T: Instance> Gpt<'a, T> {
     async fn sleep_internal(&self, st: SleepTransaction) {
         unsafe {
             driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
-            GPT0.tav.reset();
+            self.r.TAV().write(|w| w.set_TAV(0));
 
             //driverlib::TimerLoadSet(driverlib::GPT0_BASE, driverlib::TIMER_A);
             if st.overflow_limit == 0 {
                 // No overflow, we immediately want to seel for the specified amount.
                 driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
-                GPT0.tamr.modify(|_r, w| w.tamie().en());
+                self.r.TAMR().modify(|w| w.set_TAMIE(vals::TAMIE::EN));
             } else {
                 // There is overflow, so we first need to sleep for u32::MAX for
                 // SleepTransaction::overflow_limit times.
                 driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
-                GPT0.tamr.modify(|_r, w| w.tamie().dis());
+                self.r.TAMR().modify(|w| w.set_TAMIE(vals::TAMIE::DIS));
             }
             self.state.set_new_transaction(st);
 
