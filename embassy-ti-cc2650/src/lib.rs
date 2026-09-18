@@ -8,12 +8,14 @@ use crate::prcm::Prcm;
 
 mod ccfg;
 pub mod chip;
+pub mod debug_print;
 pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
 pub mod prcm;
 pub mod rtc;
 pub mod scif_driver;
+pub mod scif_uart_emulator;
 mod time_driver;
 pub mod uart;
 pub mod udma;
@@ -79,6 +81,8 @@ pub fn init() -> Peripherals {
 
     #[cfg(feature = "time-driver")]
     time_driver::init();
+
+    scif_uart_emulator::SCIF_UART.initialize();
 
     peripherals
 }
