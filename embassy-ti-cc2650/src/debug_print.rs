@@ -44,6 +44,12 @@ impl<'a> fmt::Write for LostBytesWriter<'a> {
     }
 }
 
+/*
+ * Logging utility for cc2650, based on UART emulated with the sensor controller.
+ * It is safe to call from multiple tasks as it won't be preempted for a different task
+ * mid-execution. However, this is not true for interrupts, so this function shouldn't be
+ * called from ISRs.
+ */
 pub fn debug_print(debug_message: &'static [u8]) {
     // This function should not be called from ISR.
     debug_assert!(crate::pac::CPU_SCS.ICSR().read().VECTACTIVE() == 0);
