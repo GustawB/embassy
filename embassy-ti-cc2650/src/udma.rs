@@ -77,12 +77,12 @@ impl Udma {
     }
 
     #[inline]
-    pub(crate) fn uart_transfer_tx(&self, mem: &[u8]) {
+    pub(crate) fn uart_transfer_tx(&self, src: u32, len: usize) {
         unsafe {
             (*CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
-                mem.as_ptr() as *mut (),
+                src as *mut (),
                 &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
-                mem.len() as u32,
+                len as u32,
             );
             driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_TX_CHANNEL);
         }

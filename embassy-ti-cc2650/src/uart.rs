@@ -34,6 +34,9 @@ use embassy_sync::zerocopy_channel;
 use paste::paste;
 use static_cell::StaticCell;
 
+/// CC2650 has 128 KB of FLASH.
+const FLASH_SIZE: u32 = 128 * 1024;
+
 // 0x40001000 is the start address of registers for UART0.
 // cc2650 crate calls it RegisterBlock; I took this
 // address from said crate.
@@ -178,8 +181,8 @@ pub enum TxError {
     BufferEmpty,
     /// Buffer was too long.
     BufferTooLong,
-    /// Buffer was coming from FLASH memory
-    FlashMemory,
+    /// Buffer was not entirely in FLASH or SRAM (e.g. ROM, GPRAM).
+    UnsupportedMemory,
 }
 
 fn enable_uart_irqs(flags: u32) {
@@ -352,24 +355,32 @@ impl<T: Instance> UartFullTx<T> {
         UART.dmactl.modify(|_r, w| w.txdmae().set_bit());
     }
 
-    fn sanitize_tx_input_buffer(&self, buffer: &[u8]) -> Result<(), TxError> {
+    /// Validates `buffer` and returns the address uDMA should read it from.
+    fn sanitize_tx_input_buffer(&self, buffer: &[u8]) -> Result<u32, TxError> {
         if buffer.len() > driverlib::UDMA_XFER_SIZE_MAX as usize {
             return Err(TxError::BufferTooLong);
         }
         if buffer.len() == 0 {
             return Err(TxError::BufferEmpty);
         }
-        if (buffer.as_ptr() as u32) < driverlib::SRAM_BASE {
-            return Err(TxError::FlashMemory);
+        let start = buffer.as_ptr() as u32;
+        let end = start + buffer.len() as u32;
+        if end <= driverlib::FLASHMEM_BASE + FLASH_SIZE {
+            // uDMA can't read FLASH directly, but it can read the same bytes through the alias.
+            return Ok(start + driverlib::FLASHMEM_ALIAS_BASE);
         }
-        Ok(())
+        if start >= driverlib::SRAM_BASE {
+            return Ok(start);
+        }
+        // ROM, GPRAM or a buffer straddling the end of FLASH.
+        Err(TxError::UnsupportedMemory)
     }
 
-    /// uDMA-based, asynchronous write. Each write should be smaller than UDMA_XFER_SIZE_MAX ,
-    /// and because of uDMA limitations, data should not come from the FLASH memory.
+    /// uDMA-based, asynchronous write. Each write should be smaller than UDMA_XFER_SIZE_MAX.
+    /// Data must live in FLASH or SRAM.
     #[allow(unused)]
     pub async fn write(&mut self, buffer: &[u8]) -> Result<(), TxError> {
-        self.sanitize_tx_input_buffer(buffer)?;
+        let src = self.sanitize_tx_input_buffer(buffer)?;
 
         // Cancellation-safety: write() waits until
         // uDMA transfer finishes. If the future is cancelled
@@ -382,7 +393,7 @@ impl<T: Instance> UartFullTx<T> {
         });
 
         // Setup uDMA transfer.
-        UDMA.uart_transfer_tx(buffer);
+        UDMA.uart_transfer_tx(src, buffer.len());
 
         // Prevent reordering; in this case,
         // setup MUST happen before starting the transfer.
@@ -412,11 +423,8 @@ impl<T: Instance> UartFullTx<T> {
     /// Same as write(), but instead of async polling it executes busy while() loop.
     #[allow(unused)]
     pub fn write_blocking(&mut self, buffer: &[u8]) -> Result<(), TxError> {
-        let res = self.sanitize_tx_input_buffer(buffer);
-        if res.is_err() {
-            return res;
-        }
-        UDMA.uart_transfer_tx(buffer);
+        let src = self.sanitize_tx_input_buffer(buffer)?;
+        UDMA.uart_transfer_tx(src, buffer.len());
 
         compiler_fence(Ordering::SeqCst);
 
