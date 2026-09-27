@@ -95,6 +95,9 @@ const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
 pub(crate) use define_peri;
 
 pub fn init() -> Peripherals {
+    unsafe {
+        driverlib::SetupTrimDevice();
+    };
     let peripherals = pac::Peripherals::take().unwrap();
     let prcm = Prcm::new(peripherals.PRCM);
 

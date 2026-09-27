@@ -44,7 +44,7 @@ impl Udma {
         // are reserved.
         IUDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
 
-        IUDMA.reqdone.reset();
+        IUDMA.reqdone.write(|w| unsafe { w.chnls().bits(u32::MAX) });
 
         IUDMA.cfg.write(|w| w.masterenable().set_bit());
     }

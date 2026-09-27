@@ -23,7 +23,6 @@ use crate::udma::UDMA;
 use core::future;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::ptr::addr_of;
 use core::sync::atomic::{Ordering, compiler_fence};
 use core::task::Poll;
 use core::usize;
@@ -360,7 +359,7 @@ impl<T: Instance> UartFullTx<T> {
         if buffer.len() == 0 {
             return Err(TxError::BufferEmpty);
         }
-        if (addr_of!(buffer) as u32) < driverlib::SRAM_BASE {
+        if (buffer.as_ptr() as u32) < driverlib::SRAM_BASE {
             return Err(TxError::FlashMemory);
         }
         Ok(())
