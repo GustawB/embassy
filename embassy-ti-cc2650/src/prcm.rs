@@ -12,6 +12,8 @@ enum PowerDomain {
     Cpu = driverlib::PRCM_DOMAIN_CPU,
 }
 
+/// This struct holds a mask of all power domains
+/// that we would like to enable.
 #[derive(Clone, Copy, Default)]
 pub struct PowerDomains(u32);
 
@@ -192,8 +194,8 @@ impl Clock {
         }
         if clocks.i2c {
             prcm.i2cclkgr.write(|w| w.clk_en().set_bit());
-            // prcm.i2cclkgs.write(|w| w.clk_en().set_bit());
-            // prcm.i2cclkgds.write(|w| w.clk_en().set_bit());
+            prcm.i2cclkgs.write(|w| w.clk_en().set_bit());
+            prcm.i2cclkgds.write(|w| w.clk_en().set_bit());
         }
 
         Self::reload_clock_controller(&prcm.clkloadctl);
@@ -232,8 +234,8 @@ impl Clock {
         }
         if clocks.i2c {
             prcm.i2cclkgr.write(|w| w.clk_en().clear_bit());
-            // prcm.i2cclkgs.write(|w| w.clk_en().clear_bit());
-            // prcm.i2cclkgds.write(|w| w.clk_en().clear_bit());
+            prcm.i2cclkgs.write(|w| w.clk_en().clear_bit());
+            prcm.i2cclkgds.write(|w| w.clk_en().clear_bit());
         }
         Self::reload_clock_controller(&prcm.clkloadctl);
     }

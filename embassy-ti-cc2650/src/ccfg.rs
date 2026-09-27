@@ -2,13 +2,9 @@
 /// in its corresponding ELF section (.ccfg). If linker cooperates (i.e., defines .ccfg
 /// as the appropriate flash region), then this makes CCFG flashed together with Tock.
 mod ccfg_data {
-    //*****************************************************************************
-    //
-    // Customer configuration (ccfg) typedef.
-    // The implementation of this struct is required by device ROM boot code
-    //  and must be placed at the end of flash. Do not modify this struct!
-    //
-    //*****************************************************************************
+    /// Customer configuration (ccfg) typedef.
+    /// The implementation of this struct is required by device ROM boot code
+    ///  and must be placed at the end of flash. Do not modify this struct!
 
     #[allow(non_snake_case)]
     #[repr(C)]
@@ -1945,8 +1941,6 @@ mod ccfg_data {
     mod defaults {
         use super::hw_ccfg::*;
 
-        //*****************************************************************************
-        //
         // Introduction
         //
         // This file contains fields used by Boot ROM, startup code, and SW radio
@@ -1954,8 +1948,6 @@ mod ccfg_data {
         //
         // Fields are documented in more details in hw_ccfg.h and CCFG.html in
         // DriverLib documentation (doc_overview.html -> CPU Domain Memory Map -> CCFG).
-        //
-        //*****************************************************************************
 
         //*****************************************************************************
         //

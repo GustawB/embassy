@@ -22,10 +22,10 @@ use paste::paste;
 
 const UART0_TX_CHANNEL: u32 = 2;
 
-// 1073872896 is the start address of registers for UDMA0.
+// 0x40020000 is the start address of registers for UDMA0.
 // cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(IUdma, udma0, 1073872896);
+// address from said crate.
+define_peri!(IUdma, udma0, 0x40020000);
 
 pub(crate) static UDMA: Udma = Udma {};
 
@@ -379,6 +379,8 @@ struct ChannelControlMap {
     alternate_channel_31: ChannelControlEntry<Alternate, 63>, // Reserved
 }
 
+/// `ChannelControlMap` needs to be a static object which is then passed to the UDMA config.
+/// But static objects need to be `Sync`, so it's wrapped in this wrapper.
 struct SyncMapWrapper(UnsafeCell<ChannelControlMap>);
 unsafe impl Sync for SyncMapWrapper {}
 
