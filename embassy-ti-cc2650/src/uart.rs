@@ -109,7 +109,7 @@ impl Config {
     }
 }
 
-/// Default for the CherryMote testbed.
+/// Default for the 1KT testbed.
 impl Default for Config {
     fn default() -> Self {
         Self {
