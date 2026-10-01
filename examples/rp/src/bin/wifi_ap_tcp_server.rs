@@ -7,25 +7,28 @@
 
 use core::str::from_utf8;
 
-use cyw43::aligned_bytes;
+use cyw43::{ApAuth, aligned_bytes};
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::tcp::TcpSocket;
-use embassy_net::{Config, StackResources};
+use embassy_net::StackStorage;
+use embassy_net::iface::dhcpv4_server::DhcpServerConfig;
+use embassy_net::tcp::{TcpListener, TcpSocket};
+use embassy_net::wire::{IpCidr, Ipv4Addr};
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::{bind_interrupts, dma};
 use embassy_time::Duration;
 use embedded_io_async::Write;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
-    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>;
 });
 
 #[embassy_executor::task]
@@ -36,11 +39,11 @@ async fn cyw43_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) {
     info!("Hello World!");
 
@@ -70,6 +73,7 @@ async fn main(spawner: Spawner) {
         p.PIN_24,
         p.PIN_29,
         dma::Channel::new(p.DMA_CH0, Irqs),
+        dma::Channel::new(p.DMA_CH1, Irqs),
     );
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
@@ -83,23 +87,27 @@ async fn main(spawner: Spawner) {
         .await;
 
     // Use a link-local address for communication without DHCP server
-    let config = Config::ipv4_static(embassy_net::StaticConfigV4 {
-        address: embassy_net::Ipv4Cidr::new(embassy_net::Ipv4Address::new(169, 254, 1, 1), 16),
-        dns_servers: heapless::Vec::new(),
-        gateway: None,
-    });
-
     // Generate random seed
     let seed = rng.next_u64();
 
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
-    let (stack, runner) = embassy_net::new(net_device, config, RESOURCES.init(StackResources::new()), seed);
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
+    let (stack, runner) = embassy_net::Stack::new(STACK.init(StackStorage::new()), seed);
+
+    // Add the network interface to the stack.
+    static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
+    let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(net_device)));
+    // Static address, we're the access point.
+    unwrap!(iface.add_ip_addr(IpCidr::new(Ipv4Addr::new(10, 0, 0, 1).into(), 24)));
+    let dhcp_config = DhcpServerConfig::new(Ipv4Addr::new(10, 0, 0, 100), Ipv4Addr::new(10, 0, 0, 199));
+    unwrap!(iface.set_dhcpv4_server(Some(dhcp_config)));
 
     spawner.spawn(unwrap!(net_task(runner)));
 
-    //control.start_ap_open("cyw43", 5).await;
-    control.start_ap_wpa2("cyw43", "password", 5).await;
+    control.start_ap("cyw43", "password", ApAuth::Wpa2, 5).await;
+    // WPA3 requires compatible CYW43 firmware and client support.
+    // control.start_ap("cyw43", "password", ApAuth::Wpa3, 5).await;
+    // control.start_ap("cyw43", "password", ApAuth::Wpa2Wpa3, 5).await;
 
     // And now we can use it!
 
@@ -107,18 +115,27 @@ async fn main(spawner: Spawner) {
     let mut tx_buffer = [0; 4096];
     let mut buf = [0; 4096];
 
-    loop {
-        let mut socket = TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
-        socket.set_timeout(Some(Duration::from_secs(10)));
+    let mut listener = unwrap!(TcpListener::new(stack));
+    unwrap!(listener.listen(1234));
 
+    loop {
         control.gpio_set(0, false).await;
         info!("Listening on TCP:1234...");
-        if let Err(e) = socket.accept(1234).await {
+        let token = match listener.accept().await {
+            Ok(token) => token,
+            Err(e) => {
+                warn!("accept error: {:?}", e);
+                continue;
+            }
+        };
+        let mut socket = unwrap!(TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer));
+        socket.set_timeout(Some(Duration::from_secs(10)));
+        if let Err(e) = socket.accept(token).await {
             warn!("accept error: {:?}", e);
             continue;
         }
 
-        info!("Received connection from {:?}", socket.remote_endpoint());
+        info!("Received connection from {:?}", socket.remote_addr());
         control.gpio_set(0, true).await;
 
         loop {

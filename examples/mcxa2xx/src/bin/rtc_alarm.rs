@@ -1,11 +1,14 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_mcxa as hal;
 use embassy_mcxa::bind_interrupts;
+use embassy_time::Timer;
 use hal::peripherals::RTC0;
 use hal::rtc::{DateTime, InterruptHandler, Rtc};
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     RTC => InterruptHandler<RTC0>;
@@ -28,19 +31,27 @@ async fn main(_spawner: Spawner) {
         second: 0,
     };
 
-    rtc.stop();
-
     defmt::info!("Time set to: 2025-10-15 14:30:00");
     rtc.set_datetime(now);
 
-    let mut alarm = now;
-    alarm.second += 10;
+    defmt::info!("Wait for 15 seconds");
+    Timer::after_secs(15).await;
 
-    defmt::info!("Alarm set for: 2025-10-15 14:30:10 (+10 seconds)");
-    defmt::info!("RTC started, waiting for alarm...");
+    let mut alarm = now;
+    alarm.second += 20;
+
+    // SR[TAF] is set when TSR equals TAR *and then increments* (RM 31.5.1.7),
+    // so the alarm lands as the clock ticks to 14:30:21, about 6 s from here.
+    defmt::info!("Alarm set for: 2025-10-15 14:30:20, waiting...");
 
     rtc.wait_for_alarm(alarm).await;
-    defmt::info!("*** ALARM TRIGGERED! ***");
+    let at = rtc.get_datetime();
+    defmt::info!(
+        "*** ALARM TRIGGERED at {=u8}:{=u8}:{=u8} ***",
+        at.hour,
+        at.minute,
+        at.second
+    );
 
     defmt::info!("Example complete - Test PASSED!");
 }

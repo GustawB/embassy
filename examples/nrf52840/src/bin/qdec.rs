@@ -2,10 +2,11 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::qdec::{self, Qdec};
 use embassy_nrf::{bind_interrupts, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     QDEC => qdec::InterruptHandler<peripherals::QDEC>;
@@ -15,7 +16,7 @@ bind_interrupts!(struct Irqs {
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
     let config = qdec::Config::default();
-    let mut rotary_enc = Qdec::new(p.QDEC, Irqs, p.P0_31, p.P0_30, config);
+    let mut rotary_enc = Qdec::new(p.QDEC, p.P0_31, p.P0_30, Irqs, config);
 
     info!("Turn rotary encoder!");
     let mut value = 0;

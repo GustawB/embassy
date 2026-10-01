@@ -5,12 +5,18 @@ use core::future;
 use core::marker::PhantomData;
 use core::task::Poll;
 
+use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
+use embassy_time::Timer;
+pub use embedded_hal_1::i2c::Operation;
 use pac::i2c;
 
-use crate::gpio::AnyPin;
-use crate::interrupt::typelevel::{Binding, Interrupt};
+use crate::gpio::{AnyPin, Pin, SealedPin};
+use crate::interrupt::Interrupt;
+use crate::interrupt::typelevel::{Binding, Interrupt as _};
+use crate::mode::{Async, Blocking, Mode};
+use crate::time::Hertz;
 use crate::{interrupt, pac, peripherals};
 
 /// I2C error abort reason
@@ -41,13 +47,17 @@ pub enum Error {
     InvalidWriteBufferLength,
     /// Target i2c address is out of range
     AddressOutOfRange(u16),
+    /// SDA is being held low
+    SDAHeldLow,
+    /// SCL is being held low
+    SCLHeldLow,
     /// Target i2c address is reserved
     #[deprecated = "embassy_rp no longer prevents accesses to reserved addresses."]
     AddressReserved(u16),
 }
 
 /// I2C Config error
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum ConfigError {
     /// Max i2c speed is 1MHz
@@ -58,12 +68,63 @@ pub enum ConfigError {
     ClockTooFast,
 }
 
+/// I2C target address.
+///
+/// Use [`Address::SevenBit`] for the usual 7-bit addressing, and [`Address::TenBit`] for
+/// devices using the 10-bit addressing extension. A bare `u8` converts to a 7-bit address,
+/// a bare `u16` to a 10-bit one.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum Address {
+    /// 7-bit address.
+    SevenBit(u8),
+    /// 10-bit address.
+    TenBit(u16),
+}
+
+impl Address {
+    fn is_ten_bit(self) -> bool {
+        matches!(self, Self::TenBit(_))
+    }
+
+    fn value(self) -> u16 {
+        match self {
+            Self::SevenBit(a) => a as u16,
+            Self::TenBit(a) => a,
+        }
+    }
+
+    fn check(self) -> Result<(), Error> {
+        let max = match self {
+            Self::SevenBit(_) => 0x7f,
+            Self::TenBit(_) => 0x3ff,
+        };
+        if self.value() > max {
+            return Err(Error::AddressOutOfRange(self.value()));
+        }
+        Ok(())
+    }
+}
+
+impl From<u8> for Address {
+    fn from(addr: u8) -> Self {
+        Self::SevenBit(addr)
+    }
+}
+
+impl From<u16> for Address {
+    fn from(addr: u16) -> Self {
+        Self::TenBit(addr)
+    }
+}
+
 /// I2C config.
 #[non_exhaustive]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
     /// Frequency.
-    pub frequency: u32,
+    pub frequency: Hertz,
     /// Enable internal pullup on SDA.
     ///
     /// Using external pullup resistors is recommended for I2C. If you do
@@ -78,7 +139,7 @@ pub struct Config {
 impl Default for Config {
     fn default() -> Self {
         Self {
-            frequency: 100_000,
+            frequency: Hertz(100_000),
             sda_pullup: true,
             scl_pullup: true,
         }
@@ -88,35 +149,46 @@ impl Default for Config {
 pub const FIFO_SIZE: u8 = 16;
 
 /// I2C driver.
-#[derive(Debug)]
-pub struct I2c<'d, T: Instance, M: Mode> {
-    phantom: PhantomData<(&'d mut T, M)>,
+pub struct I2c<'d, M: Mode> {
+    info: &'static Info,
+    phantom: PhantomData<(&'d mut (), M)>,
+    sda: Peri<'d, AnyPin>,
+    scl: Peri<'d, AnyPin>,
 }
 
-impl<'d, T: Instance> I2c<'d, T, Blocking> {
+impl<M: Mode> core::fmt::Debug for I2c<'_, M> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("I2c")
+            .field("phantom", &self.phantom)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'d> I2c<'d, Blocking> {
     /// Create a new driver instance in blocking mode.
-    pub fn new_blocking(
-        peri: Peri<'d, T>,
+    pub fn new_blocking<T: Instance>(
+        _peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
         config: Config,
     ) -> Self {
-        Self::new_inner(peri, scl.into(), sda.into(), config)
+        Self::new_inner(T::info(), scl.into(), sda.into(), config)
     }
 }
 
-impl<'d, T: Instance> I2c<'d, T, Async> {
+impl<'d> I2c<'d, Async> {
     /// Create a new driver instance in async mode.
-    pub fn new_async(
-        peri: Peri<'d, T>,
+    pub fn new<T: Instance>(
+        _peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>>,
         config: Config,
     ) -> Self {
-        let i2c = Self::new_inner(peri, scl.into(), sda.into(), config);
+        let info = T::info();
+        let i2c = Self::new_inner(info, scl.into(), sda.into(), config);
 
-        let r = T::regs();
+        let r = info.regs;
 
         // mask everything initially
         r.ic_intr_mask().write_value(i2c::regs::IcIntrMask(0));
@@ -136,7 +208,7 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
     {
         future::poll_fn(|cx| {
             // Register prior to checking the condition
-            T::waker().register(cx.waker());
+            self.info.waker.register(cx.waker());
             let r = f(self);
 
             if r.is_pending() {
@@ -152,16 +224,25 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
             return Err(Error::InvalidReadBufferLength);
         }
 
-        let p = T::regs();
+        let p = self.info.regs;
 
         let mut remaining = buffer.len();
         let mut remaining_queue = buffer.len();
 
         let mut abort_reason = Ok(());
 
+        // Cancel-safety
+        let on_drop = OnDrop::new(|| {
+            // Abort
+            p.ic_enable().write(|w| {
+                w.set_abort(true);
+                w.set_enable(true);
+            });
+        });
+
         while remaining > 0 {
             // Waggle SCK - basically the same as write
-            let tx_fifo_space = Self::tx_fifo_capacity();
+            let tx_fifo_space = self.tx_fifo_capacity();
             let mut batch = 0;
 
             debug_assert!(remaining_queue > 0);
@@ -186,7 +267,7 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
             let res = self
                 .wait_on(
                     |me| {
-                        let rxfifo = Self::rx_fifo_len();
+                        let rxfifo = me.rx_fifo_len();
                         if let Err(abort_reason) = me.read_and_clear_abort_reason() {
                             Poll::Ready(Err(abort_reason))
                         } else if rxfifo >= batch {
@@ -226,7 +307,9 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
             };
         }
 
-        self.wait_stop_det(abort_reason, send_stop).await
+        let res = self.wait_stop_det(abort_reason, send_stop).await;
+        on_drop.defuse();
+        res
     }
 
     async fn write_async_internal(
@@ -234,12 +317,21 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
         bytes: impl IntoIterator<Item = u8>,
         send_stop: bool,
     ) -> Result<(), Error> {
-        let p = T::regs();
+        let p = self.info.regs;
 
         let mut bytes = bytes.into_iter().peekable();
 
+        // Cancel-safety
+        let on_drop = OnDrop::new(|| {
+            // Abort
+            p.ic_enable().write(|w| {
+                w.set_abort(true);
+                w.set_enable(true);
+            });
+        });
+
         let res = 'xmit: loop {
-            let tx_fifo_space = Self::tx_fifo_capacity();
+            let tx_fifo_space = self.tx_fifo_capacity();
 
             for _ in 0..tx_fifo_space {
                 if let Some(byte) = bytes.next() {
@@ -260,7 +352,7 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
                     |me| {
                         if let abort_reason @ Err(_) = me.read_and_clear_abort_reason() {
                             Poll::Ready(abort_reason)
-                        } else if !Self::tx_fifo_full() {
+                        } else if !me.tx_fifo_full() {
                             // resume if there's any space free in the tx fifo
                             Poll::Ready(Ok(()))
                         } else {
@@ -285,7 +377,9 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
             }
         };
 
-        self.wait_stop_det(res, send_stop).await
+        let res = self.wait_stop_det(res, send_stop).await;
+        on_drop.defuse();
+        res
     }
 
     /// Helper to wait for a stop bit, for both tx and rx. If we had an abort,
@@ -295,7 +389,7 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
     /// Also handles an abort which arises while processing the tx fifo.
     async fn wait_stop_det(&mut self, had_abort: Result<(), Error>, do_stop: bool) -> Result<(), Error> {
         if had_abort.is_err() || do_stop {
-            let p = T::regs();
+            let p = self.info.regs;
 
             let had_abort2 = self
                 .wait_on(
@@ -327,32 +421,51 @@ impl<'d, T: Instance> I2c<'d, T, Async> {
         }
     }
 
-    /// Read from address into buffer asynchronously.
-    pub async fn read_async(&mut self, addr: impl Into<u16>, buffer: &mut [u8]) -> Result<(), Error> {
-        Self::setup(addr.into())?;
-        self.read_async_internal(buffer, true, true).await
+    /// Read from address into buffer.
+    pub async fn read(&mut self, address: impl Into<Address>, read: &mut [u8]) -> Result<(), Error> {
+        self.setup_with_recovery(address.into()).await?;
+        self.read_async_internal(read, true, true).await
     }
 
-    /// Write to address from buffer asynchronously.
-    pub async fn write_async(
-        &mut self,
-        addr: impl Into<u16>,
-        bytes: impl IntoIterator<Item = u8>,
-    ) -> Result<(), Error> {
-        Self::setup(addr.into())?;
-        self.write_async_internal(bytes, true).await
+    /// Write to address from buffer.
+    pub async fn write(&mut self, address: impl Into<Address>, write: &[u8]) -> Result<(), Error> {
+        self.setup_with_recovery(address.into()).await?;
+        self.write_async_internal(write.iter().copied(), true).await
     }
 
-    /// Write to address from bytes and read from address into buffer asynchronously.
-    pub async fn write_read_async(
+    /// Write to address from bytes and read from address into buffer.
+    pub async fn write_read(
         &mut self,
-        addr: impl Into<u16>,
-        bytes: impl IntoIterator<Item = u8>,
-        buffer: &mut [u8],
+        address: impl Into<Address>,
+        write: &[u8],
+        read: &mut [u8],
     ) -> Result<(), Error> {
-        Self::setup(addr.into())?;
-        self.write_async_internal(bytes, false).await?;
-        self.read_async_internal(buffer, true, true).await
+        self.setup_with_recovery(address.into()).await?;
+        self.write_async_internal(write.iter().copied(), false).await?;
+        self.read_async_internal(read, true, true).await
+    }
+
+    /// Execute a sequence of operations as a single I2C transaction.
+    pub async fn transaction(
+        &mut self,
+        address: impl Into<Address>,
+        operations: &mut [Operation<'_>],
+    ) -> Result<(), Error> {
+        if operations.is_empty() {
+            return Ok(());
+        }
+
+        self.setup_with_recovery(address.into()).await?;
+
+        let mut iterator = operations.iter_mut();
+        while let Some(op) = iterator.next() {
+            let last = iterator.len() == 0;
+            match op {
+                Operation::Read(buffer) => self.read_async_internal(buffer, false, last).await?,
+                Operation::Write(buffer) => self.write_async_internal(buffer.iter().copied(), last).await?,
+            }
+        }
+        Ok(())
     }
 }
 
@@ -364,10 +477,11 @@ pub struct InterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     // Mask interrupts and wake any task waiting for this interrupt
     unsafe fn on_interrupt() {
-        let i2c = T::regs();
+        let info = T::info();
+        let i2c = info.regs;
         i2c.ic_intr_mask().write_value(pac::i2c::regs::IcIntrMask::default());
 
-        T::waker().wake();
+        info.waker.wake();
     }
 }
 
@@ -389,9 +503,9 @@ where
     });
 }
 
-impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
-    fn new_inner(_peri: Peri<'d, T>, scl: Peri<'d, AnyPin>, sda: Peri<'d, AnyPin>, config: Config) -> Self {
-        let reset = T::reset();
+impl<'d, M: Mode> I2c<'d, M> {
+    fn new_inner(info: &'static Info, scl: Peri<'d, AnyPin>, sda: Peri<'d, AnyPin>, config: Config) -> Self {
+        let reset = (info.reset)();
         crate::reset::reset(reset);
         crate::reset::unreset_wait(reset);
 
@@ -399,7 +513,12 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
         set_up_i2c_pin(&scl, config.scl_pullup);
         set_up_i2c_pin(&sda, config.sda_pullup);
 
-        let mut me = Self { phantom: PhantomData };
+        let mut me = Self {
+            info,
+            phantom: PhantomData,
+            scl,
+            sda,
+        };
 
         if let Err(e) = me.set_config_inner(&config) {
             panic!("Error configuring i2c: {:?}", e);
@@ -409,11 +528,11 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
     }
 
     fn set_config_inner(&mut self, config: &Config) -> Result<(), ConfigError> {
-        if config.frequency > 1_000_000 {
+        if config.frequency.0 > 1_000_000 {
             return Err(ConfigError::FrequencyTooHigh);
         }
 
-        let p = T::regs();
+        let p = self.info.regs;
 
         p.ic_enable().write(|w| w.set_enable(false));
 
@@ -424,7 +543,7 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
         // https://github.com/raspberrypi/pico-sdk/blob/bfcbefafc5d2a210551a4d9d80b4303d4ae0adf7/src/rp2_common/hardware_i2c/i2c.c#L69
         let clk_base = crate::clocks::clk_peri_freq();
 
-        let period = (clk_base + config.frequency / 2) / config.frequency;
+        let period = (clk_base + config.frequency.0 / 2) / config.frequency.0;
         let lcnt = period * 3 / 5; // spend 3/5 (60%) of the period low
         let hcnt = period - lcnt; // and 2/5 (40%) of the period high
 
@@ -440,7 +559,7 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
         // internally provide a hold time of at least 300ns for the SDA
         // signal to bridge the undefined region of the falling edge of SCL.
         // A smaller hold time of 120ns is used for fast mode plus.
-        let sda_tx_hold_count = if config.frequency < 1_000_000 {
+        let sda_tx_hold_count = if config.frequency.0 < 1_000_000 {
             // sda_tx_hold_count = clk_base [cycles/s] * 300ns * (1s /
             // 1e9ns) Reduce 300/1e9 to 3/1e7 to avoid numbers that don't
             // fit in uint. Add 1 to avoid division truncation.
@@ -473,37 +592,108 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
         Ok(())
     }
 
-    fn setup(addr: u16) -> Result<(), Error> {
-        if addr >= 0x80 {
-            return Err(Error::AddressOutOfRange(addr));
+    fn is_scl_low(&self) -> bool {
+        self.scl.sio_in().read() & (1 << (self.scl.pin() % 32)) == 0
+    }
+
+    fn is_sda_low(&self) -> bool {
+        self.sda.sio_in().read() & (1 << (self.sda.pin() % 32)) == 0
+    }
+
+    fn setup(&self, addr: Address, ignore_lockup: bool) -> Result<(), Error> {
+        addr.check()?;
+
+        let ten_bit = addr.is_ten_bit();
+
+        let p = self.info.regs;
+        p.ic_enable().write(|w| w.set_enable(false));
+
+        if !ignore_lockup {
+            if self.is_sda_low() {
+                return Err(Error::SDAHeldLow);
+            }
+            if self.is_scl_low() {
+                return Err(Error::SCLHeldLow);
+            }
         }
 
-        let p = T::regs();
-        p.ic_enable().write(|w| w.set_enable(false));
-        p.ic_tar().write(|w| w.set_ic_tar(addr));
+        p.ic_con().modify(|w| w.set_ic_10bitaddr_master(ten_bit));
+        p.ic_tar().write(|w| w.set_ic_tar(addr.value()));
         p.ic_enable().write(|w| w.set_enable(true));
         Ok(())
     }
 
-    #[inline]
-    fn tx_fifo_full() -> bool {
-        Self::tx_fifo_capacity() == 0
+    async fn setup_with_recovery(&mut self, addr: Address) -> Result<(), Error> {
+        let setup_result = self.setup(addr, false);
+        if setup_result == Err(Error::SDAHeldLow) {
+            #[cfg(feature = "defmt")]
+            defmt::warn!("SDA held low, attempting recovery");
+            // Cancel safety
+            let on_drop = OnDrop::new(|| {
+                // Set back to i2c mode
+                self.scl.gpio().ctrl().write(|w| w.set_funcsel(3));
+                self.sda.gpio().ctrl().write(|w| w.set_funcsel(3));
+            });
+
+            let scl_pin_bit = 1 << (self.scl.pin() % 32);
+            let sda_pin_bit = 1 << (self.sda.pin() % 32);
+            // Set low and flip between input for high and output for low
+            self.scl.sio_out().value_clr().write_value(scl_pin_bit);
+            self.sda.sio_out().value_clr().write_value(sda_pin_bit);
+            self.scl.sio_oe().value_clr().write_value(scl_pin_bit); // Input => High
+            self.sda.sio_oe().value_clr().write_value(sda_pin_bit); // Input => High
+            // Switch to sio mode
+            self.scl.gpio().ctrl().write(|w| w.set_funcsel(0x05));
+            self.sda.gpio().ctrl().write(|w| w.set_funcsel(0x05));
+            // Attempt automatic recovery
+            for _ in 0..9 {
+                self.scl.sio_oe().value_set().write_value(scl_pin_bit); // Low
+                Timer::after_micros(5).await;
+                self.scl.sio_oe().value_clr().write_value(scl_pin_bit); // High
+                Timer::after_micros(5).await;
+                if !self.is_sda_low() {
+                    // Recovery successful
+                    #[cfg(feature = "defmt")]
+                    defmt::warn!("SDA recovered");
+                    break;
+                }
+            }
+            if !self.is_sda_low() {
+                // Send a stop
+                self.sda.sio_oe().value_set().write_value(sda_pin_bit); // Low
+                Timer::after_micros(5).await;
+                self.sda.sio_oe().value_clr().write_value(sda_pin_bit); // High
+                Timer::after_micros(5).await;
+            }
+            // Reset gpio config
+            drop(on_drop);
+
+            self.read_and_clear_abort_reason().ok();
+            self.setup(addr, false)
+        } else {
+            setup_result
+        }
     }
 
     #[inline]
-    fn tx_fifo_capacity() -> u8 {
-        let p = T::regs();
+    fn tx_fifo_full(&self) -> bool {
+        self.tx_fifo_capacity() == 0
+    }
+
+    #[inline]
+    fn tx_fifo_capacity(&self) -> u8 {
+        let p = self.info.regs;
         FIFO_SIZE - p.ic_txflr().read().txflr()
     }
 
     #[inline]
-    fn rx_fifo_len() -> u8 {
-        let p = T::regs();
+    fn rx_fifo_len(&self) -> u8 {
+        let p = self.info.regs;
         p.ic_rxflr().read().rxflr()
     }
 
     fn read_and_clear_abort_reason(&mut self) -> Result<(), Error> {
-        let p = T::regs();
+        let p = self.info.regs;
         let abort_reason = p.ic_tx_abrt_source().read();
         if abort_reason.0 != 0 {
             // Note clearing the abort flag also clears the reason, and this
@@ -533,14 +723,14 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
             return Err(Error::InvalidReadBufferLength);
         }
 
-        let p = T::regs();
+        let p = self.info.regs;
         let lastindex = read.len() - 1;
         for (i, byte) in read.iter_mut().enumerate() {
             let first = i == 0;
             let last = i == lastindex;
 
             // wait until there is space in the FIFO to write the next byte
-            while Self::tx_fifo_full() {}
+            while self.tx_fifo_full() {}
 
             p.ic_data_cmd().write(|w| {
                 w.set_restart(restart && first);
@@ -549,7 +739,7 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
                 w.set_cmd(true);
             });
 
-            while Self::rx_fifo_len() == 0 {
+            while self.rx_fifo_len() == 0 {
                 self.read_and_clear_abort_reason()?;
             }
 
@@ -564,7 +754,7 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
             return Err(Error::InvalidWriteBufferLength);
         }
 
-        let p = T::regs();
+        let p = self.info.regs;
 
         for (i, byte) in write.iter().enumerate() {
             let last = i == write.len() - 1;
@@ -605,28 +795,54 @@ impl<'d, T: Instance + 'd, M: Mode> I2c<'d, T, M> {
     // =========================
 
     /// Read from address into buffer blocking caller until done.
-    pub fn blocking_read(&mut self, address: impl Into<u16>, read: &mut [u8]) -> Result<(), Error> {
-        Self::setup(address.into())?;
+    pub fn blocking_read(&mut self, address: impl Into<Address>, read: &mut [u8]) -> Result<(), Error> {
+        self.setup(address.into(), true)?;
         self.read_blocking_internal(read, true, true)
         // Automatic Stop
     }
 
     /// Write to address from buffer blocking caller until done.
-    pub fn blocking_write(&mut self, address: impl Into<u16>, write: &[u8]) -> Result<(), Error> {
-        Self::setup(address.into())?;
+    pub fn blocking_write(&mut self, address: impl Into<Address>, write: &[u8]) -> Result<(), Error> {
+        self.setup(address.into(), true)?;
         self.write_blocking_internal(write, true)
     }
 
     /// Write to address from bytes and read from address into buffer blocking caller until done.
-    pub fn blocking_write_read(&mut self, address: impl Into<u16>, write: &[u8], read: &mut [u8]) -> Result<(), Error> {
-        Self::setup(address.into())?;
+    pub fn blocking_write_read(
+        &mut self,
+        address: impl Into<Address>,
+        write: &[u8],
+        read: &mut [u8],
+    ) -> Result<(), Error> {
+        self.setup(address.into(), true)?;
         self.write_blocking_internal(write, false)?;
         self.read_blocking_internal(read, true, true)
         // Automatic Stop
     }
+
+    /// Execute a sequence of operations as a single I2C transaction, blocking caller until done.
+    pub fn blocking_transaction(
+        &mut self,
+        address: impl Into<Address>,
+        operations: &mut [Operation<'_>],
+    ) -> Result<(), Error> {
+        if operations.is_empty() {
+            return Ok(());
+        }
+
+        self.setup(address.into(), false)?;
+        for i in 0..operations.len() {
+            let last = i == operations.len() - 1;
+            match &mut operations[i] {
+                Operation::Read(buf) => self.read_blocking_internal(buf, false, last)?,
+                Operation::Write(buf) => self.write_blocking_internal(buf, last)?,
+            }
+        }
+        Ok(())
+    }
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Read for I2c<'d, T, M> {
+impl<'d, M: Mode> embedded_hal_02::blocking::i2c::Read for I2c<'d, M> {
     type Error = Error;
 
     fn read(&mut self, address: u8, buffer: &mut [u8]) -> Result<(), Self::Error> {
@@ -634,7 +850,7 @@ impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Read for I2c<'d, 
     }
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Write for I2c<'d, T, M> {
+impl<'d, M: Mode> embedded_hal_02::blocking::i2c::Write for I2c<'d, M> {
     type Error = Error;
 
     fn write(&mut self, address: u8, bytes: &[u8]) -> Result<(), Self::Error> {
@@ -642,7 +858,7 @@ impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Write for I2c<'d,
     }
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::WriteRead for I2c<'d, T, M> {
+impl<'d, M: Mode> embedded_hal_02::blocking::i2c::WriteRead for I2c<'d, M> {
     type Error = Error;
 
     fn write_read(&mut self, address: u8, bytes: &[u8], buffer: &mut [u8]) -> Result<(), Self::Error> {
@@ -650,7 +866,7 @@ impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::WriteRead for I2c
     }
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Transactional for I2c<'d, T, M> {
+impl<'d, M: Mode> embedded_hal_02::blocking::i2c::Transactional for I2c<'d, M> {
     type Error = Error;
 
     fn exec(
@@ -658,7 +874,7 @@ impl<'d, T: Instance, M: Mode> embedded_hal_02::blocking::i2c::Transactional for
         address: u8,
         operations: &mut [embedded_hal_02::blocking::i2c::Operation<'_>],
     ) -> Result<(), Self::Error> {
-        Self::setup(address.into())?;
+        self.setup(address.into(), false)?;
         for i in 0..operations.len() {
             let last = i == operations.len() - 1;
             match &mut operations[i] {
@@ -684,94 +900,61 @@ impl embedded_hal_1::i2c::Error for Error {
             Self::InvalidReadBufferLength => embedded_hal_1::i2c::ErrorKind::Other,
             Self::InvalidWriteBufferLength => embedded_hal_1::i2c::ErrorKind::Other,
             Self::AddressOutOfRange(_) => embedded_hal_1::i2c::ErrorKind::Other,
+            Self::SDAHeldLow => embedded_hal_1::i2c::ErrorKind::Bus,
+            Self::SCLHeldLow => embedded_hal_1::i2c::ErrorKind::Bus,
             #[allow(deprecated)]
             Self::AddressReserved(_) => embedded_hal_1::i2c::ErrorKind::Other,
         }
     }
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_1::i2c::ErrorType for I2c<'d, T, M> {
+impl<'d, M: Mode> embedded_hal_1::i2c::ErrorType for I2c<'d, M> {
     type Error = Error;
 }
 
-impl<'d, T: Instance, M: Mode> embedded_hal_1::i2c::I2c for I2c<'d, T, M> {
-    fn read(&mut self, address: u8, read: &mut [u8]) -> Result<(), Self::Error> {
+impl<'d, M: Mode, A> embedded_hal_1::i2c::I2c<A> for I2c<'d, M>
+where
+    A: embedded_hal_1::i2c::AddressMode + Into<Address> + 'static,
+{
+    fn read(&mut self, address: A, read: &mut [u8]) -> Result<(), Self::Error> {
         self.blocking_read(address, read)
     }
 
-    fn write(&mut self, address: u8, write: &[u8]) -> Result<(), Self::Error> {
+    fn write(&mut self, address: A, write: &[u8]) -> Result<(), Self::Error> {
         self.blocking_write(address, write)
     }
 
-    fn write_read(&mut self, address: u8, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
+    fn write_read(&mut self, address: A, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
         self.blocking_write_read(address, write, read)
     }
 
-    fn transaction(
-        &mut self,
-        address: u8,
-        operations: &mut [embedded_hal_1::i2c::Operation<'_>],
-    ) -> Result<(), Self::Error> {
-        Self::setup(address.into())?;
-        for i in 0..operations.len() {
-            let last = i == operations.len() - 1;
-            match &mut operations[i] {
-                embedded_hal_1::i2c::Operation::Read(buf) => self.read_blocking_internal(buf, false, last)?,
-                embedded_hal_1::i2c::Operation::Write(buf) => self.write_blocking_internal(buf, last)?,
-            }
-        }
-        Ok(())
+    fn transaction(&mut self, address: A, operations: &mut [Operation<'_>]) -> Result<(), Self::Error> {
+        self.blocking_transaction(address, operations)
     }
 }
 
-impl<'d, A, T> embedded_hal_async::i2c::I2c<A> for I2c<'d, T, Async>
+impl<'d, A> embedded_hal_async::i2c::I2c<A> for I2c<'d, Async>
 where
-    A: embedded_hal_async::i2c::AddressMode + Into<u16> + 'static,
-    T: Instance + 'd,
+    A: embedded_hal_async::i2c::AddressMode + Into<Address> + 'static,
 {
     async fn read(&mut self, address: A, read: &mut [u8]) -> Result<(), Self::Error> {
-        self.read_async(address, read).await
+        self.read(address, read).await
     }
 
     async fn write(&mut self, address: A, write: &[u8]) -> Result<(), Self::Error> {
-        self.write_async(address, write.iter().copied()).await
+        self.write(address, write).await
     }
 
     async fn write_read(&mut self, address: A, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
-        self.write_read_async(address, write.iter().copied(), read).await
+        self.write_read(address, write, read).await
     }
 
-    async fn transaction(
-        &mut self,
-        address: A,
-        operations: &mut [embedded_hal_1::i2c::Operation<'_>],
-    ) -> Result<(), Self::Error> {
-        use embedded_hal_1::i2c::Operation;
-
-        let addr: u16 = address.into();
-
-        if !operations.is_empty() {
-            Self::setup(addr)?;
-        }
-        let mut iterator = operations.iter_mut();
-
-        while let Some(op) = iterator.next() {
-            let last = iterator.len() == 0;
-
-            match op {
-                Operation::Read(buffer) => {
-                    self.read_async_internal(buffer, false, last).await?;
-                }
-                Operation::Write(buffer) => {
-                    self.write_async_internal(buffer.iter().cloned(), last).await?;
-                }
-            }
-        }
-        Ok(())
+    async fn transaction(&mut self, address: A, operations: &mut [Operation<'_>]) -> Result<(), Self::Error> {
+        self.transaction(address, operations).await
     }
 }
 
-impl<'d, T: Instance, M: Mode> embassy_embedded_hal::SetConfig for I2c<'d, T, M> {
+impl<'d, M: Mode> embassy_embedded_hal::SetConfig for I2c<'d, M> {
     type Config = Config;
     type ConfigError = ConfigError;
 
@@ -781,31 +964,15 @@ impl<'d, T: Instance, M: Mode> embassy_embedded_hal::SetConfig for I2c<'d, T, M>
 }
 
 pub(crate) trait SealedInstance {
-    fn regs() -> crate::pac::i2c::I2c;
-    fn reset() -> crate::pac::resets::regs::Peripherals;
-    fn waker() -> &'static AtomicWaker;
+    fn info() -> &'static Info;
 }
 
-trait SealedMode {}
-
-/// Driver mode.
-#[allow(private_bounds)]
-pub trait Mode: SealedMode {}
-
-macro_rules! impl_mode {
-    ($name:ident) => {
-        impl SealedMode for $name {}
-        impl Mode for $name {}
-    };
+pub(crate) struct Info {
+    pub(crate) regs: pac::i2c::I2c,
+    pub(crate) reset: fn() -> pac::resets::regs::Peripherals,
+    pub(crate) waker: AtomicWaker,
+    pub(crate) interrupt: Interrupt,
 }
-
-/// Blocking mode.
-pub struct Blocking;
-/// Async mode.
-pub struct Async;
-
-impl_mode!(Blocking);
-impl_mode!(Async);
 
 /// I2C instance.
 #[allow(private_bounds)]
@@ -815,28 +982,23 @@ pub trait Instance: SealedInstance + PeripheralType {
 }
 
 macro_rules! impl_instance {
-    ($type:ident, $irq:ident, $reset:ident) => {
-        impl SealedInstance for peripherals::$type {
-            #[inline]
-            fn regs() -> pac::i2c::I2c {
-                pac::$type
-            }
-
-            #[inline]
-            fn reset() -> pac::resets::regs::Peripherals {
-                let mut ret = pac::resets::regs::Peripherals::default();
-                ret.$reset(true);
-                ret
-            }
-
-            #[inline]
-            fn waker() -> &'static AtomicWaker {
-                static WAKER: AtomicWaker = AtomicWaker::new();
-
-                &WAKER
+    ($inst:ident, $irq:ident, $reset:ident) => {
+        impl SealedInstance for peripherals::$inst {
+            fn info() -> &'static Info {
+                static INFO: Info = Info {
+                    regs: pac::$inst,
+                    reset: || {
+                        let mut ret = pac::resets::regs::Peripherals::default();
+                        ret.$reset(true);
+                        ret
+                    },
+                    waker: AtomicWaker::new(),
+                    interrupt: crate::interrupt::typelevel::$irq::IRQ,
+                };
+                &INFO
             }
         }
-        impl Instance for peripherals::$type {
+        impl Instance for peripherals::$inst {
             type Interrupt = crate::interrupt::typelevel::$irq;
         }
     };

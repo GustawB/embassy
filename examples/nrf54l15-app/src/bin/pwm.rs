@@ -2,10 +2,11 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::pwm::{DutyCycle, Prescaler, SimplePwm};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 // for i in range(1024): print(int((math.sin(i/512*math.pi)*0.4+0.5)**2*32767), ', ', end='')
 static DUTY: [u16; 1024] = [
@@ -71,7 +72,7 @@ static DUTY: [u16; 1024] = [
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
-    let mut pwm = SimplePwm::new_2ch(p.PWM20, p.P1_10, p.P1_14, &Default::default());
+    let mut pwm = SimplePwm::new_2ch(p.PWM20, p.P1_10, p.P1_14, Default::default());
     pwm.set_prescaler(Prescaler::Div1);
     pwm.set_max_duty(32767);
     info!("pwm initialized!");
@@ -79,8 +80,8 @@ async fn main(_spawner: Spawner) {
     let mut i = 0;
     loop {
         i += 1;
-        pwm.set_duty(0, DutyCycle::inverted(DUTY[i % 1024]));
-        pwm.set_duty(1, DutyCycle::inverted(DUTY[(i + 512) % 1024]));
+        pwm.ch0().set_duty(DutyCycle::inverted(DUTY[i % 1024]));
+        pwm.ch1().set_duty(DutyCycle::inverted(DUTY[(i + 512) % 1024]));
         Timer::after_millis(3).await;
     }
 }

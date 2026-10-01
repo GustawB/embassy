@@ -70,7 +70,7 @@ pub fn main_cortex_m(args: TokenStream, item: TokenStream) -> TokenStream {
     main::run(args.into(), item.into(), &main::ARCH_CORTEX_M).into()
 }
 
-/// Creates a new `executor` instance and declares an application entry point for Cortex-A/R
+/// Creates a new `executor` instance and declares an application entry point for AArch32
 /// spawning the corresponding function body as an async task.
 ///
 /// The following restrictions apply:
@@ -91,8 +91,8 @@ pub fn main_cortex_m(args: TokenStream, item: TokenStream) -> TokenStream {
 /// }
 /// ```
 #[proc_macro_attribute]
-pub fn main_cortex_ar(args: TokenStream, item: TokenStream) -> TokenStream {
-    main::run(args.into(), item.into(), &main::ARCH_CORTEX_AR).into()
+pub fn main_aarch32(args: TokenStream, item: TokenStream) -> TokenStream {
+    main::run(args.into(), item.into(), &main::ARCH_AARCH32).into()
 }
 
 /// Creates a new `executor` instance and declares an architecture agnostic application entry point spawning

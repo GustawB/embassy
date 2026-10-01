@@ -1,23 +1,29 @@
-pub mod bindings;
-pub mod ble;
-pub mod context;
-pub mod error;
-pub mod gap;
-pub mod gap_init;
-pub mod gatt;
-pub mod hci;
-pub mod linklayer_plat;
-pub mod ll_sys;
-pub mod ll_sys_if;
-pub mod mac_sys_if;
-pub mod power_table;
-pub mod runner;
-pub mod security;
-pub mod util_seq;
+mod context;
+pub mod controller;
+mod host_if;
+mod linklayer_plat;
+mod ll_sys;
+mod ll_sys_if;
+mod mac_sys_if;
+pub mod platform;
+mod power_table;
+mod util_seq;
 
 // Re-export main types
-pub use ble::{Ble, VersionInfo};
-pub use error::BleError;
-pub use gap_init::{GapInitParams, GapRole, IoCapability, PhyPrefs, SecurityParams};
-pub use linklayer_plat::{run_radio_high_isr, run_radio_sw_low_isr, set_nvm_base_address};
-pub use runner::ble_runner;
+pub use controller::{ChannelPacket, Controller, HighInterruptHandler, LowInterruptHandler};
+pub use linklayer_plat::{erase_bond_nvm_flash, set_nvm_base_address};
+pub use platform::Platform;
+
+pub mod bindings {
+    pub use stm32_bindings::bindings::{mac, wba_ble_stack as ble, wba_link_layer as link_layer};
+}
+
+/// Opaque token proving the platform has been initialized.
+///
+/// Returned by [`Platform::new`] and required by [`Controller::new`] and the
+/// [`crate::bluetooth::HCI`] constructors. The borrow ties the controller's
+/// lifetime to the platform, preventing a second BLE stack initialization
+/// while the first one is still alive.
+pub struct Runtime {
+    pub(crate) _private: (),
+}

@@ -438,7 +438,7 @@ where
     fn poll_ready_to_send(&mut self, cx: &mut Context<'_>) -> Poll<()> {
         self.senders_waker.register(cx.waker());
 
-        if !self.queue.len() == self.queue.capacity() {
+        if self.queue.len() != self.queue.capacity() {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -540,12 +540,12 @@ where
     }
 
     /// Get a sender for this channel.
-    pub fn sender(&self) -> Sender<'_, M, T, K, N> {
+    pub const fn sender(&self) -> Sender<'_, M, T, K, N> {
         Sender { channel: self }
     }
 
     /// Get a receiver for this channel.
-    pub fn receiver(&self) -> Receiver<'_, M, T, K, N> {
+    pub const fn receiver(&self) -> Receiver<'_, M, T, K, N> {
         Receiver { channel: self }
     }
 
@@ -687,6 +687,10 @@ where
 
     fn poll_receive(&self, cx: &mut Context<'_>) -> Poll<T> {
         PriorityChannel::poll_receive(self, cx)
+    }
+
+    fn is_full(&self) -> bool {
+        PriorityChannel::is_full(self)
     }
 }
 

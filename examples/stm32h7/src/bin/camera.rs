@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::dcmi::{self, *};
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -9,7 +10,7 @@ use embassy_stm32::rcc::{Mco, Mco1Source, McoConfig, McoPrescaler};
 use embassy_stm32::{Config, bind_interrupts, dma, i2c, peripherals};
 use embassy_time::Timer;
 use ov7725::*;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 const WIDTH: usize = 100;
 const HEIGHT: usize = 100;
@@ -75,7 +76,7 @@ async fn main(_spawner: Spawner) {
 
     let config = dcmi::Config::default();
     let mut dcmi = Dcmi::new_8bit(
-        p.DCMI, p.DMA1_CH0, Irqs, p.PC6, p.PC7, p.PE0, p.PE1, p.PE4, p.PD3, p.PE5, p.PE6, p.PB7, p.PA4, p.PA6, config,
+        p.DCMI, p.DMA1_CH0, p.PC6, p.PC7, p.PE0, p.PE1, p.PE4, p.PD3, p.PE5, p.PE6, p.PB7, p.PA4, p.PA6, Irqs, config,
     );
 
     defmt::info!("attempting capture");

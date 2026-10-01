@@ -4,8 +4,12 @@ use core::cell::Cell;
 use core::fmt::{Debug, Formatter};
 use core::future::{Future, poll_fn};
 use core::mem::MaybeUninit;
+#[cfg(not(feature = "portable-atomic"))]
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
+
+#[cfg(feature = "portable-atomic")]
+use portable_atomic::{AtomicBool, Ordering};
 
 /// The `OnceLock` is a synchronization primitive that allows for
 /// initializing a value once, and allowing others to `.await` a
@@ -77,7 +81,7 @@ impl<T> OnceLock<T> {
 
     /// Try to get a reference to the underlying value if it exists.
     pub fn try_get(&self) -> Option<&T> {
-        if self.init.load(Ordering::Relaxed) {
+        if self.init.load(Ordering::Acquire) {
             Some(unsafe { self.get_ref_unchecked() })
         } else {
             None
@@ -92,7 +96,7 @@ impl<T> OnceLock<T> {
             // If the value is not set, set it and return Ok.
             if !self.init.load(Ordering::Relaxed) {
                 self.data.set(MaybeUninit::new(value));
-                self.init.store(true, Ordering::Relaxed);
+                self.init.store(true, Ordering::Release);
                 Ok(())
 
             // Otherwise return an error with the given value.
@@ -113,7 +117,7 @@ impl<T> OnceLock<T> {
             // If the value is not set, set it.
             if !self.init.load(Ordering::Relaxed) {
                 self.data.set(MaybeUninit::new(f()));
-                self.init.store(true, Ordering::Relaxed);
+                self.init.store(true, Ordering::Release);
             }
         });
 

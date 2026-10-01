@@ -1,14 +1,16 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_mcxa as hal;
 use embassy_time::{Duration, Timer};
 use hal::bind_interrupts;
 use hal::config::Config;
 use hal::gpio::{DriveStrength, Level, Output, SlewRate};
 use hal::peripherals::WWDT0;
 use hal::wwdt::{InterruptHandler, Watchdog};
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(
     struct Irqs {
@@ -26,6 +28,7 @@ async fn main(_spawner: Spawner) {
     let wwdt_config = hal::wwdt::Config {
         timeout: Duration::from_millis(4000),
         warning: None,
+        clock: Default::default(),
     };
 
     let mut watchdog = Watchdog::new(p.WWDT0, Irqs, wwdt_config).unwrap();

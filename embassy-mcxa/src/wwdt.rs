@@ -4,7 +4,10 @@
 //! periodically "feed" the watchdog within a specified time window. This helps detect
 //! and recover from software failures or system hangs.
 //!
-//! The FRO12M provides a 1 MHz clock (clk_1m) used as WWDT0 independant clock source. This clock is / 4 by an internal fixed divider.
+//! WWDT0 is hardwired to `clk_1m`, the 1 MHz clock derived from FRO12M. On MCXA5xx, WWDT1
+//! instead has a source mux and can additionally be driven from `clk_16k` or `fro_hf_div`; see
+//! [`ClockConfig`]. Both instances have a `CLKDIV` pre-divider, and both then divide by a further
+//! fixed factor of 4 inside the peripheral.
 
 #[cfg(feature = "embedded-mcu-hal")]
 use core::convert::Infallible;
@@ -12,10 +15,9 @@ use core::marker::PhantomData;
 
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_time::Duration;
-use paste::paste;
 
-use crate::clocks::periph_helpers::Clk1MConfig;
-use crate::clocks::{ClockError, Gate, WakeGuard, enable_and_reset};
+use crate::clocks::periph_helpers::{Div4, WwdtClockSel, WwdtConfig, WwdtInstance};
+use crate::clocks::{ClockError, Gate, PoweredClock, WakeGuard, enable_and_reset};
 use crate::interrupt::typelevel;
 use crate::interrupt::typelevel::{Handler, Interrupt};
 use crate::pac;
@@ -32,12 +34,45 @@ pub enum Error {
     WarningTooLarge,
 }
 
+/// WWDT clock configuration
+///
+/// The resolved frequency is divided by the WWDT's own fixed divide-by-4
+/// prescaler (MCXA5xx RM Rev 1 34.2.2, Figure 172) before it reaches the
+/// counter, so the tick rate is `source / div / 4`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClockConfig {
+    /// Powered clock configuration
+    pub power: PoweredClock,
+    /// WWDT clock source
+    ///
+    /// WWDT0 is hardwired to `clk_1m` and accepts only
+    /// [`WwdtClockSel::Clk1M`]; anything else is rejected with
+    /// [`Error::ClockSetup`].
+    pub source: WwdtClockSel,
+    /// WWDT pre-divider
+    pub div: Div4,
+}
+
+impl Default for ClockConfig {
+    fn default() -> Self {
+        Self {
+            power: PoweredClock::NormalEnabledDeepSleepDisabled,
+            // `clk_1m` is WWDT0's only source, and is the frequency the driver
+            // assumed for both instances before the source became selectable.
+            source: WwdtClockSel::Clk1M,
+            div: const { Div4::no_div() },
+        }
+    }
+}
+
 /// WWDT configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Config {
     /// The timeout period after which the watchdog will trigger
     pub timeout: Duration,
     pub warning: Option<Duration>,
+    /// Clock configuration
+    pub clock: ClockConfig,
 }
 
 impl Default for Config {
@@ -45,6 +80,7 @@ impl Default for Config {
         Self {
             timeout: Duration::from_secs(1),
             warning: None,
+            clock: ClockConfig::default(),
         }
     }
 }
@@ -71,7 +107,17 @@ impl<'d> Watchdog<'d> {
         _irq: impl crate::interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Result<Self, Error> {
-        let parts = unsafe { enable_and_reset::<T>(&Clk1MConfig).map_err(Error::ClockSetup)? };
+        let ClockConfig { power, source, div } = config.clock;
+
+        // Enable clocks
+        let conf = WwdtConfig {
+            power,
+            source,
+            div,
+            instance: T::CLOCK_INSTANCE,
+        };
+
+        let parts = unsafe { enable_and_reset::<T>(&conf).map_err(Error::ClockSetup)? };
 
         let watchdog = Self {
             info: T::info(),
@@ -146,23 +192,23 @@ impl<'d> Watchdog<'d> {
     /// Enable the watchdog timer.
     /// Function is blocking until the watchdog is actually started.
     fn enable(&self) {
-        self.info.regs().mod_().modify(|w| w.set_wden(Wden::RUN));
+        self.info.regs().mod_().modify(|w| w.set_wden(Wden::Run));
         while self.info.regs().tc().read().count() == 0xFF {}
     }
 
     /// Set the watchdog protection mode to flexible.
     fn set_flexible_mode(&self) {
-        self.info.regs().mod_().modify(|w| w.set_wdprotect(Wdprotect::FLEXIBLE));
+        self.info.regs().mod_().modify(|w| w.set_wdprotect(Wdprotect::Flexible));
     }
 
     /// Enable interrupt mode.
     fn enable_interrupt(&self) {
-        self.info.regs().mod_().modify(|w| w.set_wdreset(Wdreset::INTERRUPT));
+        self.info.regs().mod_().modify(|w| w.set_wdreset(Wdreset::Interrupt));
     }
 
     /// Enable reset mode.
     fn enable_reset(&self) {
-        self.info.regs().mod_().modify(|w| w.set_wdreset(Wdreset::RESET));
+        self.info.regs().mod_().modify(|w| w.set_wdreset(Wdreset::Reset));
     }
 
     /// Set the timeout value in clock cycles.
@@ -216,7 +262,10 @@ impl<T: Instance> Handler<T::Interrupt> for InterruptHandler<T> {
     }
 }
 
-trait SealedInstance: Gate<MrccPeriphConfig = Clk1MConfig> {
+pub(crate) trait SealedInstance: Gate<MrccPeriphConfig = WwdtConfig> {
+    /// Clock instance
+    const CLOCK_INSTANCE: WwdtInstance;
+
     fn info() -> &'static Info;
 }
 
@@ -227,8 +276,8 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
     type Interrupt: typelevel::Interrupt;
 }
 
-struct Info {
-    regs: pac::wwdt::Wwdt,
+pub(crate) struct Info {
+    pub(crate) regs: pac::wwdt::Wwdt,
 }
 
 impl Info {
@@ -240,31 +289,29 @@ impl Info {
 
 unsafe impl Sync for Info {}
 
-macro_rules! impl_instance {
-    ($($n:literal);*) => {
-        $(
-            paste!{
-                impl SealedInstance for crate::peripherals::[<WWDT $n>] {
-                    fn info() -> &'static Info {
-                        static INFO: Info = Info {
-                            regs: pac::[<WWDT $n>],
-                        };
-                        &INFO
-                    }
-                }
+#[doc(hidden)]
+#[macro_export]
+macro_rules! impl_wwdt_instance {
+    ($n:literal) => {
+        paste::paste! {
+            impl $crate::wwdt::SealedInstance for $crate::peripherals::[<WWDT $n>] {
+                const CLOCK_INSTANCE: $crate::clocks::periph_helpers::WwdtInstance =
+                    $crate::clocks::periph_helpers::WwdtInstance::[<Wwdt $n>];
 
-                impl Instance for crate::peripherals::[<WWDT $n>] {
-                    type Interrupt = crate::interrupt::typelevel::[<WWDT $n>];
+                fn info() -> &'static $crate::wwdt::Info {
+                    static INFO: $crate::wwdt::Info = $crate::wwdt::Info {
+                        regs: $crate::pac::[<WWDT $n>],
+                    };
+                    &INFO
                 }
             }
-        )*
+
+            impl $crate::wwdt::Instance for $crate::peripherals::[<WWDT $n>] {
+                type Interrupt = $crate::interrupt::typelevel::[<WWDT $n>];
+            }
+        }
     };
 }
-
-impl_instance!(0);
-
-#[cfg(feature = "mcxa5xx")]
-impl_instance!(1);
 
 #[cfg(feature = "embedded-mcu-hal")]
 impl embedded_mcu_hal::watchdog::Watchdog for Watchdog<'_> {

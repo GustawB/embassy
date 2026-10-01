@@ -1,7 +1,9 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_mcxa as hal;
 use embassy_mcxa::adc::{AnyAdcPin, Command, CommandConfig, CommandId, Trigger};
 use embassy_mcxa::pac::adc::{Avgs, Mode, Sts};
 use embassy_mcxa::{bind_interrupts, peripherals};
@@ -9,7 +11,7 @@ use embassy_time::{Duration, Ticker};
 use hal::adc::{self, Adc};
 use hal::clocks::config::Div8;
 use hal::config::Config;
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     ADC1 => adc::InterruptHandler<peripherals::ADC1>;
@@ -29,10 +31,10 @@ async fn main(_spawner: Spawner) {
         2,
         CommandConfig {
             chained_command: None,
-            averaging: Avgs::AVERAGE_1024,  // Max average
-            sample_time: Sts::SAMPLE_131P5, // Max sample time
+            averaging: Avgs::Average1024,  // Max average
+            sample_time: Sts::Sample131p5, // Max sample time
             compare: adc::Compare::Disabled,
-            resolution: Mode::DATA_16_BITS,
+            resolution: Mode::Data16Bits,
             wait_for_trigger: false,
         },
     )

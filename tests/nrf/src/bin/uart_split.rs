@@ -6,12 +6,13 @@
 mod common;
 
 use defmt::{assert_eq, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::uarte::Uarte;
 use embassy_nrf::{peripherals, uarte};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -22,8 +23,8 @@ async fn main(_spawner: Spawner) {
 
     let uarte = Uarte::new(
         peri!(p, UART0).reborrow(),
-        peri!(p, PIN_A).reborrow(),
         peri!(p, PIN_B).reborrow(),
+        peri!(p, PIN_A).reborrow(),
         irqs!(UART0),
         config.clone(),
     );

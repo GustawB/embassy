@@ -1,8 +1,10 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::select::{Either, select};
+use embassy_mcxa as hal;
 use embassy_mcxa::bind_interrupts;
 use embassy_mcxa::clocks::PoweredClock;
 use embassy_mcxa::clocks::config::{
@@ -10,9 +12,9 @@ use embassy_mcxa::clocks::config::{
 };
 use embassy_mcxa::clocks::periph_helpers::{Div4, I3cClockSel};
 use embassy_mcxa::gpio::{self, Input, Pull};
-use embassy_mcxa::i3c::controller::{self, BusType, I3c, Operation};
+use embassy_mcxa::i3c::controller::{self, BusType, I3c, IbiEvent, IbiSlot, Operation, Payload};
 use embassy_mcxa::peripherals::{GPIO1, I3C0};
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(
     struct Irqs {
@@ -104,6 +106,11 @@ async fn main(_spawner: Spawner) {
     .await
     .unwrap();
 
+    // Register the P3T1755's dynamic address in MIBIRULES so the controller
+    // captures any IBI MDB byte. P3T1755 sets BCR[2]=0 (no payload), so pass
+    // has_payload=false.
+    i3c.register_ibi(IbiSlot::Slot0, 0x08, Payload::No).unwrap();
+
     /* ---------------------------
      * ENEC
      * --------------------------- */
@@ -169,10 +176,12 @@ async fn main(_spawner: Spawner) {
             Either::First(_) => {
                 defmt::info!("Button pressed");
             }
-            Either::Second(res) => {
-                let (addr, payload_len) = res.unwrap();
-                defmt::info!("IBI from 0x{:02x}, payload_len={}", addr, payload_len);
-            }
+            Either::Second(res) => match res.unwrap() {
+                IbiEvent::Ibi { address, payload_len } => {
+                    defmt::info!("IBI from 0x{:02x}, payload_len={}", address, payload_len);
+                }
+                event => defmt::warn!("Unexpected IBI event: {:?}", event),
+            },
         }
 
         i3c.async_write_read(addr, &[0x00], &mut buf, BusType::I3cSdr)

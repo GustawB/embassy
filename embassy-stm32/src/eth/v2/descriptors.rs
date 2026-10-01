@@ -1,9 +1,8 @@
 use core::sync::atomic::{Ordering, fence};
 
 use vcell::VolatileCell;
-
-use crate::eth::{Packet, RX_BUFFER_SIZE, TX_BUFFER_SIZE};
-use crate::pac::ETH;
+#[cfg(feature = "ptp")]
+use xarxa_driver::Timestamp;
 
 /// Transmit and Receive Descriptor fields
 #[allow(dead_code)]
@@ -16,12 +15,29 @@ mod emac_consts {
     pub const EMAC_DES0_BUF1AP: u32 = 0xFFFF_FFFF;
 
     pub const EMAC_TDES2_IOC: u32 = 0x8000_0000;
+    pub const EMAC_TDES2_TTSE: u32 = 0x4000_0000;
     pub const EMAC_TDES2_B1L: u32 = 0x0000_3FFF;
+
+    // TX checksum insertion control (TDES3, read format), bits [17:16]. 0b11 =
+    // insert IP header + payload checksums, with the pseudo-header computed by
+    // hardware (full offload).
+    pub const EMAC_TDES3_CIC_FULL: u32 = 0x0003_0000;
+    pub const EMAC_TDES3_TTSS: u32 = 0x0002_0000;
 
     pub const EMAC_RDES3_IOC: u32 = 0x4000_0000;
     pub const EMAC_RDES3_PL: u32 = 0x0000_7FFF;
     pub const EMAC_RDES3_BUF1V: u32 = 0x0100_0000;
     pub const EMAC_RDES3_PKTLEN: u32 = 0x0000_7FFF;
+    pub const EMAC_RDES3_RS1V: u32 = 0x0400_0000;
+
+    // RX checksum status (RDES1, write-back format). These are NOT folded into
+    // the RDES3 error summary, so they must be inspected separately.
+    pub const EMAC_RDES1_IPHE: u32 = 0x0000_0008; // IP header checksum error
+    pub const EMAC_RDES1_IPCE: u32 = 0x0000_0080; // IP payload (TCP/UDP/ICMP) checksum error
+    pub const EMAC_RDES1_PT: u32 = 0x0000_0003; // payload type
+    pub const EMAC_RDES1_PT_UDP: u32 = 1;
+    pub const EMAC_RDES1_PT_TCP: u32 = 2;
+    pub const EMAC_RDES1_TSA: u32 = 0x0000_4000; // timestamp available
 }
 use emac_consts::*;
 
@@ -50,82 +66,43 @@ impl TDes {
     }
 
     /// Return true if this TDes is not currently owned by the DMA
-    fn available(&self) -> bool {
+    pub(crate) fn available(&self) -> bool {
         self.tdes3.get() & EMAC_DES3_OWN == 0
     }
-}
 
-pub(crate) struct TDesRing<'a> {
-    descriptors: &'a mut [TDes],
-    buffers: &'a mut [Packet<TX_BUFFER_SIZE>],
-    index: usize,
-}
-
-impl<'a> TDesRing<'a> {
-    /// Initialise this TDesRing. Assume TDesRing is corrupt.
-    pub fn new(descriptors: &'a mut [TDes], buffers: &'a mut [Packet<TX_BUFFER_SIZE>]) -> Self {
-        assert!(descriptors.len() > 0);
-        assert!(descriptors.len() == buffers.len());
-
-        for td in descriptors.iter_mut() {
-            *td = TDes::new();
-        }
-
-        // Initialize the pointers in the DMA engine. (There will be a memory barrier later
-        // before the DMA engine is enabled.)
-        let dma = ETH.ethernet_dma();
-        dma.dmac_tx_dlar().write(|w| w.0 = descriptors.as_mut_ptr() as u32);
-        dma.dmac_tx_rlr().write(|w| w.set_tdrl((descriptors.len() as u16) - 1));
-        dma.dmac_tx_dtpr().write(|w| w.0 = 0);
-
-        Self {
-            descriptors,
-            buffers,
-            index: 0,
-        }
-    }
-
-    pub(crate) fn len(&self) -> usize {
-        self.descriptors.len()
-    }
-
-    /// Return the next available packet buffer for transmitting, or None
-    pub(crate) fn available(&mut self) -> Option<&mut [u8]> {
-        let d = &mut self.descriptors[self.index];
-        if d.available() {
-            Some(&mut self.buffers[self.index].0)
-        } else {
-            None
-        }
-    }
-
-    /// Transmit the packet written in a buffer returned by `available`.
-    pub(crate) fn transmit(&mut self, len: usize) {
-        let td = &mut self.descriptors[self.index];
-        assert!(td.available());
+    /// Program the descriptor in read format: buffer address, length, and
+    /// interrupt-on-completion.
+    pub(crate) fn set_frame(&mut self, buf: *const u8, len: usize) {
         assert!(len as u32 <= EMAC_TDES2_B1L);
+        self.tdes0.set(buf as u32);
+        self.tdes2.set((len as u32) & EMAC_TDES2_B1L | EMAC_TDES2_IOC);
+    }
 
-        // Read format
-        td.tdes0.set(self.buffers[self.index].0.as_ptr() as u32);
-        td.tdes2.set(len as u32 & EMAC_TDES2_B1L | EMAC_TDES2_IOC);
+    /// Request (or cancel) a transmit timestamp for the frame in this descriptor.
+    ///
+    /// `set_frame` rewrites `tdes2` on every transmit, so a `false` request
+    /// needs no explicit clear.
+    #[cfg(feature = "ptp")]
+    pub(crate) fn set_timestamp_request(&mut self, request: bool) {
+        if request {
+            self.tdes2.set(self.tdes2.get() | EMAC_TDES2_TTSE);
+        }
+    }
 
-        // FD: Contains first buffer of packet
-        // LD: Contains last buffer of packet
-        // Give the DMA engine ownership
-        td.tdes3.set(EMAC_DES3_FD | EMAC_DES3_LD | EMAC_DES3_OWN);
+    /// Pass ownership to the DMA engine.
+    ///
+    /// FD: Contains first buffer of packet
+    /// LD: Contains last buffer of packet
+    /// CIC_FULL: let the MAC compute and insert the IP/TCP/UDP checksums.
+    pub(crate) fn set_owned(&mut self) {
+        self.tdes3
+            .set(EMAC_DES3_FD | EMAC_DES3_LD | EMAC_DES3_OWN | EMAC_TDES3_CIC_FULL);
+    }
 
-        // Ensure changes to the descriptor are committed before DMA engine sees tail pointer store.
-        // This will generate an DMB instruction.
-        // "Preceding reads and writes cannot be moved past subsequent writes."
-        fence(Ordering::Release);
-
-        // signal DMA it can try again.
-        // See issue #2129
-        ETH.ethernet_dma()
-            .dmac_tx_dtpr()
-            .write(|w| w.0 = &td as *const _ as u32);
-
-        self.index = (self.index + 1) % self.descriptors.len();
+    #[cfg(feature = "ptp")]
+    pub(crate) fn timestamp(&self) -> Option<Timestamp> {
+        (self.tdes3.get() & EMAC_TDES3_TTSS != 0)
+            .then(|| Timestamp::from_seconds_and_nanos(self.tdes1.get(), self.tdes0.get()))
     }
 }
 
@@ -143,6 +120,59 @@ pub(crate) struct RDes {
     rdes3: VolatileCell<u32>,
 }
 
+pub(crate) struct RDesInfo {
+    pub(crate) rdes0: u32,
+    rdes1: u32,
+    rdes3: u32,
+}
+
+impl RDesInfo {
+    /// Return true if this RDes is acceptable to us
+    pub(crate) const fn valid(&self) -> bool {
+        // Write-back descriptor is valid if it contains the first AND last
+        // buffer of the packet AND has no errors AND is not a context descriptor.
+        if self.rdes3 & (EMAC_DES3_FD | EMAC_DES3_LD | EMAC_DES3_ES | EMAC_DES3_CTXT) != (EMAC_DES3_FD | EMAC_DES3_LD) {
+            return false;
+        }
+
+        // Hardware checksum offload: the MAC verified the IPv4 header
+        // and the TCP/UDP payload checksums. xarxa is told not to re-verify
+        // these (see the driver `capabilities`), so a frame the MAC flagged as
+        // bad must be dropped here.
+
+        let pt = self.rdes1 & EMAC_RDES1_PT;
+        let tcp_or_udp = pt == EMAC_RDES1_PT_TCP || pt == EMAC_RDES1_PT_UDP;
+        if self.rdes1 & EMAC_RDES1_IPHE != 0 || (tcp_or_udp && self.rdes1 & EMAC_RDES1_IPCE != 0) {
+            return false;
+        }
+
+        true
+    }
+
+    #[cfg(feature = "ptp")]
+    pub(crate) const fn has_timestamp(&self) -> bool {
+        self.rdes3 & EMAC_RDES3_RS1V != 0 && self.rdes1 & EMAC_RDES1_TSA != 0
+    }
+
+    /// Return true if this RDes is not currently owned by the DMA
+    pub(crate) const fn available(&self) -> bool {
+        self.rdes3 & EMAC_DES3_OWN == 0 // Owned by us
+    }
+
+    pub(crate) const fn context_available(&self) -> bool {
+        self.rdes3 & (EMAC_DES3_OWN | EMAC_DES3_CTXT) == EMAC_DES3_CTXT
+    }
+
+    pub(crate) const fn len(&self) -> u32 {
+        self.rdes3 & EMAC_RDES3_PKTLEN
+    }
+
+    /// Length of the received frame.
+    pub(crate) const fn frame_len(&self) -> usize {
+        self.len() as usize
+    }
+}
+
 impl RDes {
     pub const fn new() -> Self {
         Self {
@@ -153,105 +183,32 @@ impl RDes {
         }
     }
 
-    /// Return true if this RDes is acceptable to us
-    #[inline(always)]
-    fn valid(&self) -> bool {
-        // Write-back descriptor is valid if:
-        //
-        // Contains first buffer of packet AND contains last buf of
-        // packet AND no errors AND not a context descriptor
-        self.rdes3.get() & (EMAC_DES3_FD | EMAC_DES3_LD | EMAC_DES3_ES | EMAC_DES3_CTXT)
-            == (EMAC_DES3_FD | EMAC_DES3_LD)
+    pub(crate) fn info(&self) -> RDesInfo {
+        RDesInfo {
+            rdes0: self.rdes0.get(),
+            rdes1: self.rdes1.get(),
+            rdes3: self.rdes3.get(),
+        }
     }
 
-    /// Return true if this RDes is not currently owned by the DMA
-    #[inline(always)]
-    fn available(&self) -> bool {
-        self.rdes3.get() & EMAC_DES3_OWN == 0 // Owned by us
-    }
-
-    #[inline(always)]
-    fn set_ready(&mut self, buf: *mut u8) {
+    pub(crate) fn set_ready(&mut self, buf: *mut u8) {
         self.rdes0.set(buf as u32);
+        // The buffer address must be visible to the DMA before it is handed
+        // ownership, or it writes the next frame into the previous buffer, which
+        // by now belongs to the stack.
+        fence(Ordering::Release);
         self.rdes3.set(EMAC_RDES3_BUF1V | EMAC_RDES3_IOC | EMAC_DES3_OWN);
     }
-}
 
-/// Rx ring of descriptors and packets
-pub(crate) struct RDesRing<'a> {
-    descriptors: &'a mut [RDes],
-    buffers: &'a mut [Packet<RX_BUFFER_SIZE>],
-    index: usize,
-}
+    #[cfg(feature = "ptp")]
+    pub(crate) fn context_timestamp(&self) -> Option<Timestamp> {
+        let rdes0 = self.rdes0.get();
+        let rdes1 = self.rdes1.get();
 
-impl<'a> RDesRing<'a> {
-    pub(crate) fn new(descriptors: &'a mut [RDes], buffers: &'a mut [Packet<RX_BUFFER_SIZE>]) -> Self {
-        assert!(descriptors.len() > 1);
-        assert!(descriptors.len() == buffers.len());
-
-        for (i, desc) in descriptors.iter_mut().enumerate() {
-            *desc = RDes::new();
-            desc.set_ready(buffers[i].0.as_mut_ptr());
+        if !(rdes0 == u32::MAX && rdes1 == u32::MAX) {
+            Some(Timestamp::from_seconds_and_nanos(rdes1, rdes0))
+        } else {
+            None
         }
-
-        let dma = ETH.ethernet_dma();
-        dma.dmac_rx_dlar().write(|w| w.0 = descriptors.as_mut_ptr() as u32);
-        dma.dmac_rx_rlr().write(|w| w.set_rdrl((descriptors.len() as u16) - 1));
-        dma.dmac_rx_dtpr().write(|w| w.0 = 0);
-
-        Self {
-            descriptors,
-            buffers,
-            index: 0,
-        }
-    }
-
-    /// Get a received packet if any, or None.
-    pub(crate) fn available(&mut self) -> Option<&mut [u8]> {
-        // Not sure if the contents of the write buffer on the M7 can affects reads, so we are using
-        // a DMB here just in case, it also serves as a hint to the compiler that we're syncing the
-        // buffer (I think .-.)
-        fence(Ordering::SeqCst);
-
-        // We might have to process many packets, in case some have been rx'd but are invalid.
-        loop {
-            let descriptor = &mut self.descriptors[self.index];
-            if !descriptor.available() {
-                return None;
-            }
-
-            // If packet is invalid, pop it and try again.
-            if !descriptor.valid() {
-                warn!("invalid packet: {:08x}", descriptor.rdes0.get());
-                self.pop_packet();
-                continue;
-            }
-
-            break;
-        }
-
-        let descriptor = &mut self.descriptors[self.index];
-        let len = (descriptor.rdes3.get() & EMAC_RDES3_PKTLEN) as usize;
-        return Some(&mut self.buffers[self.index].0[..len]);
-    }
-
-    /// Pop the packet previously returned by `available`.
-    pub(crate) fn pop_packet(&mut self) {
-        let rd = &mut self.descriptors[self.index];
-        assert!(rd.available());
-
-        rd.set_ready(self.buffers[self.index].0.as_mut_ptr());
-
-        // "Preceding reads and writes cannot be moved past subsequent writes."
-        fence(Ordering::Release);
-
-        // signal DMA it can try again.
-        // See issue #2129
-        ETH.ethernet_dma()
-            .dmac_rx_dtpr()
-            .write(|w| w.0 = &rd as *const _ as u32);
-
-        // Increment index.
-        self.index = (self.index + 1) % self.descriptors.len();
     }
 }

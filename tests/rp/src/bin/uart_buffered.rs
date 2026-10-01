@@ -6,6 +6,7 @@ teleprobe_meta::target!(b"rpi-pico");
 teleprobe_meta::target!(b"pimoroni-pico-plus-2");
 
 use defmt::{assert_eq, panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Level, Output};
@@ -13,13 +14,13 @@ use embassy_rp::peripherals::UART0;
 use embassy_rp::uart::{BufferedInterruptHandler, BufferedUart, BufferedUartRx, Config, Error, Parity};
 use embassy_time::Timer;
 use embedded_io_async::{Read, ReadExactError, Write};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     UART0_IRQ => BufferedInterruptHandler<UART0>;
 });
 
-async fn read<const N: usize>(uart: &mut BufferedUart) -> Result<[u8; N], Error> {
+async fn read<const N: usize>(uart: &mut BufferedUart<'_>) -> Result<[u8; N], Error> {
     let mut buf = [255; N];
     match uart.read_exact(&mut buf).await {
         Ok(()) => Ok(buf),
@@ -29,7 +30,7 @@ async fn read<const N: usize>(uart: &mut BufferedUart) -> Result<[u8; N], Error>
     }
 }
 
-async fn read1<const N: usize>(uart: &mut BufferedUartRx) -> Result<[u8; N], Error> {
+async fn read1<const N: usize>(uart: &mut BufferedUartRx<'_>) -> Result<[u8; N], Error> {
     let mut buf = [255; N];
     match uart.read_exact(&mut buf).await {
         Ok(()) => Ok(buf),
@@ -186,7 +187,7 @@ async fn main(_spawner: Spawner) {
         config.baudrate = 1000;
         config.parity = Parity::ParityEven;
         let rx_buf = &mut [0u8; 16];
-        let mut uart = BufferedUartRx::new(uart.reborrow(), Irqs, rx.reborrow(), rx_buf, config);
+        let mut uart = BufferedUartRx::new(uart.reborrow(), rx.reborrow(), Irqs, rx_buf, config);
 
         async fn chr(pin: &mut Output<'_>, v: u8, parity: u32) {
             send(pin, v, Some(parity != 0)).await;
@@ -233,7 +234,7 @@ async fn main(_spawner: Spawner) {
         let mut config = Config::default();
         config.baudrate = 1000;
         let rx_buf = &mut [0u8; 16];
-        let mut uart = BufferedUartRx::new(uart.reborrow(), Irqs, rx.reborrow(), rx_buf, config);
+        let mut uart = BufferedUartRx::new(uart.reborrow(), rx.reborrow(), Irqs, rx_buf, config);
 
         async fn chr(pin: &mut Output<'_>, v: u8, good: bool) {
             if good {

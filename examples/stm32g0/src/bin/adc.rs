@@ -2,17 +2,20 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, Clock, Presc, SampleTime};
+use embassy_stm32::adc::{Adc, Clock, Config, Prescaler, SampleTime};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     info!("Hello World!");
 
-    let mut adc = Adc::new_with_clock(p.ADC1, Clock::Async { div: Presc::Div1 });
+    let mut config = Config::default();
+    config.clock = Clock::Async(Prescaler::Div1);
+    let mut adc = Adc::new_blocking(p.ADC1, config);
     let mut pin = p.PA1;
 
     let mut vrefint = adc.enable_vrefint();

@@ -2,13 +2,14 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::pdm::{self, Config, Pdm};
 use embassy_nrf::{bind_interrupts, peripherals};
 use embassy_time::Timer;
 use fixed::types::I7F1;
 use num_integer::Roots;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     PDM => pdm::InterruptHandler<peripherals::PDM>;
@@ -18,7 +19,7 @@ bind_interrupts!(struct Irqs {
 async fn main(_p: Spawner) {
     let p = embassy_nrf::init(Default::default());
     let config = Config::default();
-    let mut pdm = Pdm::new(p.PDM, Irqs, p.P0_01, p.P0_00, config);
+    let mut pdm = Pdm::new(p.PDM, p.P0_01, p.P0_00, Irqs, config);
 
     loop {
         for gain in [I7F1::from_num(-20), I7F1::from_num(0), I7F1::from_num(20)] {

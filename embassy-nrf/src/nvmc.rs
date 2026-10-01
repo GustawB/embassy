@@ -1,6 +1,6 @@
 //! Non-Volatile Memory Controller (NVMC, AKA internal flash) driver.
 
-use core::{ptr, slice};
+use core::ptr;
 
 use embedded_storage::nor_flash::{
     ErrorType, MultiwriteNorFlash, NorFlash, NorFlashError, NorFlashErrorKind, ReadNorFlash,
@@ -21,12 +21,14 @@ pub const PAGE_SIZE: usize = 2048;
 pub const FLASH_SIZE: usize = crate::chip::FLASH_SIZE;
 
 /// Error type for NVMC operations.
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, thiserror::Error)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Error {
     /// Operation using a location not in flash.
+    #[error("out of bounds")]
     OutOfBounds,
     /// Unaligned operation or using unaligned buffers.
+    #[error("unaligned operation or buffer")]
     Unaligned,
 }
 
@@ -119,8 +121,8 @@ impl<'d> ReadNorFlash for Nvmc<'d> {
             return Err(Error::OutOfBounds);
         }
 
-        let flash_data = unsafe { slice::from_raw_parts(offset as *const u8, bytes.len()) };
-        bytes.copy_from_slice(flash_data);
+        unsafe { ptr::copy_nonoverlapping(offset as _, bytes.as_mut_ptr(), bytes.len()) };
+
         Ok(())
     }
 

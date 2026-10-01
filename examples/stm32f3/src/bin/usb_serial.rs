@@ -2,6 +2,7 @@
 #![no_main]
 
 use defmt::{panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -12,7 +13,7 @@ use embassy_time::Timer;
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     USB_LP_CAN_RX0 => usb::InterruptHandler<peripherals::USB>;
@@ -47,7 +48,7 @@ async fn main(_spawner: Spawner) {
     dp_pullup.set_high();
 
     // Create the driver, from the HAL.
-    let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
+    let driver = Driver::new(p.USB, p.PA12, p.PA11, Irqs);
 
     // Create embassy-usb Config
     let config = embassy_usb::Config::new(0xc0de, 0xcafe);

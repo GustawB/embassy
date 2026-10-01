@@ -5,8 +5,15 @@
 
 use core::mem::MaybeUninit;
 
+#[cfg(not(stm32c5))]
 mod bd;
+#[cfg(not(stm32c5))]
 pub use bd::*;
+
+#[cfg(any(stm32f0, stm32f1, stm32f3))]
+pub const LSI_FREQ: crate::time::Hertz = crate::time::Hertz(40_000);
+#[cfg(not(any(stm32f0, stm32f1, stm32f3)))]
+pub const LSI_FREQ: crate::time::Hertz = crate::time::Hertz(32_000);
 
 #[cfg(any(mco, mco1, mco2))]
 mod mco;
@@ -17,14 +24,15 @@ pub use mco::*;
 #[cfg(dsihost)]
 pub(crate) mod dsi;
 
-#[cfg(crs)]
+#[cfg(all(crs, not(stm32c5)))]
 mod hsi48;
-#[cfg(crs)]
+#[cfg(all(crs, not(stm32c5)))]
 pub use hsi48::*;
 
 #[cfg_attr(any(stm32f0, stm32f1, stm32f3), path = "f013.rs")]
 #[cfg_attr(any(stm32f2, stm32f4, stm32f7), path = "f247.rs")]
 #[cfg_attr(stm32c0, path = "c0.rs")]
+#[cfg_attr(stm32c5, path = "c5.rs")]
 #[cfg_attr(stm32g0, path = "g0.rs")]
 #[cfg_attr(stm32g4, path = "g4.rs")]
 #[cfg_attr(any(stm32h5, stm32h7, stm32h7rs), path = "h.rs")]
@@ -84,7 +92,7 @@ pub(crate) fn set_rcc_config_ptr(config: *mut MaybeUninit<Option<Config>>) {
     RCC_CONFIG_PTR.store(config, core::sync::atomic::Ordering::SeqCst);
 }
 
-#[cfg(not(feature = "_dual-core"))]
+#[cfg(all(not(feature = "_dual-core")))]
 /// Sets the clock frequencies
 ///
 /// Safety: Sets a mutable global.
@@ -168,13 +176,6 @@ pub fn get_stop_mode(_cs: CriticalSection) -> Option<StopMode> {
         //});
         None
     }
-}
-
-#[cfg(feature = "low-power")]
-#[allow(dead_code)]
-pub(crate) unsafe fn reset_stop_refcount(_cs: CriticalSection) {
-    REFCOUNT_STOP2 = 0;
-    REFCOUNT_STOP1 = 0;
 }
 
 #[cfg(feature = "low-power")]
@@ -294,121 +295,119 @@ impl RccInfo {
     }
 
     // TODO: should this be `unsafe`?
-    pub(crate) fn enable_and_reset_with_cs(&self, cs: CriticalSection) -> Result<(), ()> {
+    pub(crate) fn enable_and_reset_with_cs(&self, cs: CriticalSection) {
+        self.enable_and_reset_with_cs_inner(cs, false);
+    }
+
+    pub(crate) fn enable_and_reset_with_cs_no_refcount(&self, cs: CriticalSection) {
+        self.enable_and_reset_with_cs_inner(cs, true);
+    }
+
+    fn enable_and_reset_with_cs_inner(&self, cs: CriticalSection, no_refcount: bool) {
         if let Some(refcount_idx) = self.refcount_idx {
             let refcount_idx = refcount_idx as usize;
             let refcount = unsafe { &mut (*&raw mut crate::_generated::REFCOUNTS)[refcount_idx] };
             *refcount += 1;
             if *refcount > 1 {
-                return Err(());
+                return;
             }
         }
 
         // set the xxxRST bit
-        let reset_ptr = self.reset_ptr();
-        if let Some(reset_ptr) = reset_ptr {
-            #[cfg(not(stm32wl5x))]
+        if let Some(reset_ptr) = self.reset_ptr() {
+            // if the other CPU has enabled the peripheral we don't want to reset it as that would reset the configuration
+            // that the other CPU has set up. we hold a hardware lock to prevent the other CPU from enabling the peripheral
+            // while we are resetting it.
             unsafe {
-                let val = reset_ptr.read_volatile();
-                reset_ptr.write_volatile(val | 1u32 << self.reset_bit);
-            }
-
-            // on stm32wl5x each CPU has its own peripheral enable bits and if the othert CPU has enabled the peripheral we don;t want to reset it
-            // as that would reset the configuration that the other CPU has set up.
-            // we hold a hardware lock to prevent the other CPU from enabling the peripheral while we are resetting it.
-            #[cfg(stm32wl5x)]
-            unsafe {
+                #[cfg(stm32wl5x)]
                 let _lock = crate::hsem::get_hsem(3).blocking_lock(0);
 
-                if !self.is_enabled_by_other_core() {
+                if (self.enable_ptr().read_volatile() & (1u32 << self.enable_bit)) == 0 {
                     let val = reset_ptr.read_volatile();
                     reset_ptr.write_volatile(val | 1u32 << self.reset_bit);
 
                     trace!("rcc: reset 0x{:x}:{}", self.enable_offset, self.enable_bit);
+                } else {
+                    trace!("rcc: skip reset 0x{:x}:{}", self.enable_offset, self.enable_bit);
                 }
             }
         }
 
-        self.enable_with_cs(cs);
+        self.enable_with_cs_inner(cs, no_refcount);
+    }
 
-        Ok(())
+    pub(crate) fn enable_with_cs(&self, cs: CriticalSection) {
+        self.enable_with_cs_inner(cs, false);
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn enable_with_cs_no_refcount(&self, cs: CriticalSection) {
+        self.enable_with_cs_inner(cs, true);
     }
 
     // TODO: should this be `unsafe`?
-    pub(crate) fn enable_with_cs(&self, _cs: CriticalSection) {
+    fn enable_with_cs_inner(&self, cs: CriticalSection, no_refcount: bool) {
         // set the xxxEN bit
-        let enable_ptr = self.enable_ptr();
-        unsafe {
-            #[cfg(not(all(stm32wl5x, feature = "_core-cm0p")))]
-            {
-                let val = enable_ptr.read_volatile();
-                enable_ptr.write_volatile(val | 1u32 << self.enable_bit);
-            }
-            // second core enable for stm32wl5x is at offset 0x100
-            #[cfg(all(stm32wl5x, feature = "_core-cm0p"))]
-            {
-                let enable_ptr = enable_ptr.add(0x100 / 4);
-                let val = enable_ptr.read_volatile();
-                enable_ptr.write_volatile(val | 1u32 << self.enable_bit);
-            }
+        let already_enabled = unsafe {
+            let val = self.enable_ptr().read_volatile();
+            self.enable_ptr().write_volatile(val | 1u32 << self.enable_bit);
+
             trace!("rcc: enabled 0x{:x}:{}", self.enable_offset, self.enable_bit);
-        }
+
+            (val & 1u32 << self.enable_bit) > 0
+        };
 
         // we must wait two peripheral clock cycles before the clock is active
         // this seems to work, but might be incorrect
         // see http://efton.sk/STM32/gotcha/g183.html
 
         // dummy read (like in the ST HALs)
-        let _ = unsafe { enable_ptr.read_volatile() };
+        let _ = unsafe { self.enable_ptr().read_volatile() };
 
         // DSB for good measure
         cortex_m::asm::dsb();
 
         // clear the xxxRST bit
-        let reset_ptr = self.reset_ptr();
-        if let Some(reset_ptr) = reset_ptr {
+        if let Some(reset_ptr) = self.reset_ptr() {
             unsafe {
                 let val = reset_ptr.read_volatile();
                 reset_ptr.write_volatile(val & !(1u32 << self.reset_bit));
             }
         }
+
+        if !already_enabled && !no_refcount {
+            self.increment_minimum_stop_refcount_with_cs(cs);
+        }
     }
 
     // TODO: should this be `unsafe`?
-    pub(crate) fn disable_with_cs(&self, _cs: CriticalSection) -> Result<(), ()> {
+    pub(crate) fn disable_with_cs(&self, cs: CriticalSection) {
         if let Some(refcount_idx) = self.refcount_idx {
             let refcount_idx = refcount_idx as usize;
             let refcount = unsafe { &mut (*&raw mut crate::_generated::REFCOUNTS)[refcount_idx] };
             *refcount -= 1;
             if *refcount > 0 {
-                return Err(());
+                return;
             }
         }
 
         // clear the xxxEN bit
-        let enable_ptr = self.enable_ptr();
-        unsafe {
-            #[cfg(not(all(stm32wl5x, feature = "_core-cm0p")))]
-            {
-                let val = enable_ptr.read_volatile();
-                enable_ptr.write_volatile(val & !(1u32 << self.enable_bit));
-            }
-            // second core enable for stm32wl5x is at offset 0x100
-            #[cfg(all(stm32wl5x, feature = "_core-cm0p"))]
-            {
-                let enable_ptr = enable_ptr.add(0x100 / 4);
-                let val = enable_ptr.read_volatile();
-                enable_ptr.write_volatile(val & !(1u32 << self.enable_bit));
-            }
+        let already_disabled = unsafe {
+            let val = self.enable_ptr().read_volatile();
+            self.enable_ptr().write_volatile(val & !(1u32 << self.enable_bit));
             trace!("rcc: disabled 0x{:x}:{}", self.enable_offset, self.enable_bit);
-        }
 
-        Ok(())
+            (val & 1u32 << self.enable_bit) == 0
+        };
+
+        if !already_disabled {
+            self.decrement_minimum_stop_refcount_with_cs(cs);
+        }
     }
 
     #[allow(dead_code)]
     fn increment_minimum_stop_refcount_with_cs(&self, _cs: CriticalSection) {
-        #[cfg(all(any(stm32wl, stm32wb), feature = "low-power"))]
+        #[cfg(feature = "low-power")]
         match self.stop_mode {
             StopMode::Stop1 | StopMode::Stop2 => increment_stop_refcount(_cs, StopMode::Stop2),
             _ => {}
@@ -417,7 +416,7 @@ impl RccInfo {
 
     #[allow(dead_code)]
     fn decrement_minimum_stop_refcount_with_cs(&self, _cs: CriticalSection) {
-        #[cfg(all(any(stm32wl, stm32wb), feature = "low-power"))]
+        #[cfg(feature = "low-power")]
         match self.stop_mode {
             StopMode::Stop1 | StopMode::Stop2 => decrement_stop_refcount(_cs, StopMode::Stop2),
             _ => {}
@@ -426,22 +425,12 @@ impl RccInfo {
 
     // TODO: should this be `unsafe`?
     pub(crate) fn enable_and_reset(&self) {
-        let _: Result<(), ()> = critical_section::with(|cs| {
-            self.enable_and_reset_with_cs(cs)?;
-            self.increment_minimum_stop_refcount_with_cs(cs);
-
-            Ok(())
-        });
+        critical_section::with(|cs| self.enable_and_reset_with_cs(cs))
     }
 
     // TODO: should this be `unsafe`?
     pub(crate) fn disable(&self) {
-        let _: Result<(), ()> = critical_section::with(|cs| {
-            self.disable_with_cs(cs)?;
-            self.decrement_minimum_stop_refcount_with_cs(cs);
-
-            Ok(())
-        });
+        critical_section::with(|cs| self.disable_with_cs(cs))
     }
 
     #[allow(dead_code)]
@@ -452,7 +441,7 @@ impl RccInfo {
         )
     }
 
-    fn reset_ptr(&self) -> Option<*mut u32> {
+    const fn reset_ptr(&self) -> Option<*mut u32> {
         if self.reset_offset_or_0xff != 0xff {
             Some(unsafe { (RCC.as_ptr() as *mut u32).add(self.reset_offset_or_0xff as _) })
         } else {
@@ -460,17 +449,16 @@ impl RccInfo {
         }
     }
 
-    fn enable_ptr(&self) -> *mut u32 {
-        unsafe { (RCC.as_ptr() as *mut u32).add(self.enable_offset as _) }
-    }
+    const fn enable_ptr(&self) -> *mut u32 {
+        #[cfg(all(stm32wl5x, feature = "_core-cm0p"))]
+        unsafe {
+            (RCC.as_ptr() as *mut u32).add(self.enable_offset as _).add(0x100 / 4)
+        }
 
-    #[cfg(stm32wl5x)]
-    unsafe fn is_enabled_by_other_core(&self) -> bool {
-        let ptr = self.enable_ptr();
-        #[cfg(feature = "_core-cm4")]
-        let ptr = ptr.add(0x100);
-
-        (ptr.read_volatile() & (1u32 << self.enable_bit)) != 0
+        #[cfg(not(all(stm32wl5x, feature = "_core-cm0p")))]
+        unsafe {
+            (RCC.as_ptr() as *mut u32).add(self.enable_offset as _)
+        }
     }
 }
 
@@ -495,6 +483,49 @@ impl Drop for WakeGuard {
     fn drop(&mut self) {
         #[cfg(feature = "low-power")]
         critical_section::with(|cs| decrement_stop_refcount(cs, self.stop_mode));
+    }
+}
+
+impl From<WakeGuard> for MaybeWakeGuard {
+    fn from(wake_guard: WakeGuard) -> Self {
+        #[cfg(not(feature = "low-power"))]
+        let _ = wake_guard;
+
+        MaybeWakeGuard {
+            #[cfg(feature = "low-power")]
+            stop_mode: wake_guard.stop_mode,
+            #[cfg(feature = "low-power")]
+            enabled: false,
+        }
+    }
+}
+
+pub struct MaybeWakeGuard {
+    #[cfg(feature = "low-power")]
+    stop_mode: StopMode,
+    #[cfg(feature = "low-power")]
+    enabled: bool,
+}
+
+impl MaybeWakeGuard {
+    pub fn enable(&mut self) {
+        #[cfg(feature = "low-power")]
+        if !core::mem::replace(&mut self.enabled, true) {
+            critical_section::with(|cs| increment_stop_refcount(cs, self.stop_mode));
+        }
+    }
+
+    pub fn disable(&mut self) {
+        #[cfg(feature = "low-power")]
+        if core::mem::replace(&mut self.enabled, false) {
+            critical_section::with(|cs| decrement_stop_refcount(cs, self.stop_mode));
+        }
+    }
+}
+
+impl Drop for MaybeWakeGuard {
+    fn drop(&mut self) {
+        self.disable();
     }
 }
 
@@ -537,6 +568,17 @@ pub fn frequency<T: RccPeripheral>() -> Hertz {
     T::frequency()
 }
 
+/// Enables and resets peripheral `T` without incrementing refcount.
+///
+/// # Safety
+///
+/// Peripheral must not be in use.
+// TODO: should this be `unsafe`?
+#[allow(dead_code)]
+pub(crate) fn enable_and_reset_with_cs_no_refcount<T: RccPeripheral>(cs: CriticalSection) {
+    let _ = T::RCC_INFO.enable_and_reset_with_cs_no_refcount(cs);
+}
+
 /// Enables and resets peripheral `T`.
 ///
 /// # Safety
@@ -545,6 +587,16 @@ pub fn frequency<T: RccPeripheral>() -> Hertz {
 // TODO: should this be `unsafe`?
 pub fn enable_and_reset_with_cs<T: RccPeripheral>(cs: CriticalSection) {
     let _ = T::RCC_INFO.enable_and_reset_with_cs(cs);
+}
+
+/// Enables and clears the reset for peripheral `T` without incrementing refcount.
+///
+/// # Safety
+///
+/// The peripheral can be in use since this does not reset it
+#[allow(dead_code)]
+pub(crate) fn enable_with_cs_no_refcount<T: RccPeripheral>(cs: CriticalSection) {
+    T::RCC_INFO.enable_with_cs_no_refcount(cs);
 }
 
 /// Enables and clears the reset for peripheral `T`.
@@ -618,88 +670,79 @@ pub(crate) fn init_rcc(_cs: CriticalSection, config: Config) {
         // TODO: how to share this config from the secondary core thats using a lp timer? (right now its not detected as missing!)
         #[cfg(feature = "_lp-time-driver")]
         let config = {
-            use crate::pac::rcc::vals::Lptimsel;
             let mut config = config;
+
+            // Ensure the LPTIM clock source is suitable for use as a time
+            // driver during STOP mode.  If the default APB clock is selected,
+            // switch to LSI; otherwise verify that the chosen source is enabled.
+            //
+            // STM32WBA and STM32L4 use per-timer mux enums (Lptim1sel / Lptim2sel)
+            // while other families share a single Lptimsel enum.
+            macro_rules! ensure_lptim_clk {
+                ($field:ident, $Sel:path, $pclk:pat) => {
+                    match config.mux.$field {
+                        $pclk => {
+                            config.mux.$field = <$Sel>::Lsi;
+                            config.ls.lsi = true;
+                        }
+                        <$Sel>::Lsi => {
+                            config.ls.lsi = true;
+                        }
+                        <$Sel>::Hsi => {
+                            config.hsi = true;
+                        }
+                        <$Sel>::Lse => {
+                            if config.ls.lse.is_none() {
+                                panic!("LSE is not configured, but selected for time_driver!!!");
+                            }
+                            #[cfg(any(rcc_l5, rcc_u5, rcc_u3, rcc_wle, rcc_wl5, rcc_wba, rcc_u0))]
+                            if let Some(mut lse_config) = config.ls.lse {
+                                lse_config.peripherals_clocked = true;
+                                config.ls.lse = Some(lse_config);
+                            }
+                        }
+                        #[allow(unreachable_patterns)]
+                        _ => {}
+                    }
+                };
+            }
+
             #[cfg(time_driver_lptim1)]
             {
-                match config.mux.lptim1sel {
-                    Lptimsel::Pclk1 => {
-                        // set it to LSI
-                        config.mux.lptim1sel = Lptimsel::Lsi;
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::Lsi => {
-                        // ok but insure the lsi is enabled
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::Hsi => {
-                        // ok but insure the hsi is enabled
-                        config.hsi = true;
-                    }
-                    Lptimsel::Lse => {
-                        // ok but insure the lse is configured with peripherals_clocked = true!!!
-                        if let Some(mut lse_config) = config.ls.lse {
-                            lse_config.peripherals_clocked = true;
-                            config.ls.lse = Some(lse_config);
-                        } else {
-                            panic!("LSE is not not configured, but selected for time_driver!!!");
-                        }
-                    }
+                #[cfg(not(any(stm32wba, rcc_l4, rcc_l4plus)))]
+                {
+                    use crate::pac::rcc::vals::Lptimsel;
+                    #[cfg(any(stm32u5, stm32u3))]
+                    ensure_lptim_clk!(lptim1sel, Lptimsel, Lptimsel::Msik);
+                    #[cfg(not(any(stm32u5, stm32u3)))]
+                    ensure_lptim_clk!(lptim1sel, Lptimsel, Lptimsel::Pclk1);
+                }
+                #[cfg(any(stm32wba, rcc_l4, rcc_l4plus))]
+                {
+                    use crate::pac::rcc::vals::Lptim1sel;
+                    #[cfg(stm32wba)]
+                    ensure_lptim_clk!(lptim1sel, Lptim1sel, Lptim1sel::Pclk7);
+                    #[cfg(not(stm32wba))]
+                    ensure_lptim_clk!(lptim1sel, Lptim1sel, Lptim1sel::Pclk1);
                 }
             }
             #[cfg(time_driver_lptim2)]
             {
-                match config.mux.lptim2sel {
-                    Lptimsel::PCLK1 => {
-                        // set it to LSI
-                        config.mux.lptim2sel = Lptimsel::LSI;
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::LSI => {
-                        // ok but insure the lsi is enabled
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::HSI => {
-                        // ok but insure the hsi is enabled
-                        config.hsi = true;
-                    }
-                    Lptimsel::LSE => {
-                        // ok but insure the lse is configured with peripherals_clocked = true!!!
-                        if let Some(mut lse_config) = config.ls.lse {
-                            lse_config.peripherals_clocked = true;
-                            config.ls.lse = Some(lse_config);
-                        } else {
-                            panic!("LSE is not not configured, but selected for time_driver!!!");
-                        }
-                    }
+                #[cfg(not(any(stm32wba, rcc_l4, rcc_l4plus)))]
+                {
+                    use crate::pac::rcc::vals::Lptimsel;
+                    ensure_lptim_clk!(lptim2sel, Lptimsel, Lptimsel::Pclk1);
+                }
+                #[cfg(any(stm32wba, rcc_l4, rcc_l4plus))]
+                {
+                    use crate::pac::rcc::vals::Lptim2sel;
+                    ensure_lptim_clk!(lptim2sel, Lptim2sel, Lptim2sel::Pclk1);
                 }
             }
             #[cfg(time_driver_lptim3)]
             {
-                match config.mux.lptim3sel {
-                    Lptimsel::PCLK1 => {
-                        // set it to LSI
-                        config.mux.lptim3sel = Lptimsel::LSI;
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::LSI => {
-                        // ok but insure the lsi is enabled
-                        config.ls.lsi = true;
-                    }
-                    Lptimsel::HSI => {
-                        // ok but insure the hsi is enabled
-                        config.hsi = true;
-                    }
-                    Lptimsel::LSE => {
-                        // ok but insure the lse is configured with peripherals_clocked = true!!!
-                        if let Some(mut lse_config) = config.ls.lse {
-                            lse_config.peripherals_clocked = true;
-                            config.ls.lse = Some(lse_config);
-                        } else {
-                            panic!("LSE is not not configured, but selected for time_driver!!!");
-                        }
-                    }
-                }
+                use crate::pac::rcc::vals::Lptimsel;
+                ensure_lptim_clk!(lptim3sel, Lptimsel, Lptimsel::Pclk1);
             }
             config
         };

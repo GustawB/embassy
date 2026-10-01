@@ -14,6 +14,8 @@ use crate::peripherals;
 /// This pin can either be a disconnected, input, or output pin, or both. The level register bit will remain
 /// set while not in output mode, so the pin's level will be 'remembered' when it is not in output
 /// mode.
+#[derive(Debug)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Flex<'d> {
     pub(crate) pin: Peri<'d, AnyPin>,
 }
@@ -30,17 +32,8 @@ impl<'d> Flex<'d> {
         Self { pin: pin.into() }
     }
 
-    /// Reborrow into a "child" Flex.
-    ///
-    /// `self` will stay borrowed until the child Peripheral is dropped.
-    pub fn reborrow(&mut self) -> Flex<'_> {
-        Flex {
-            pin: self.pin.reborrow(),
-        }
-    }
-
     /// Unsafely clone (duplicate) a Flex.
-    pub unsafe fn clone_unchecked(&self) -> Flex<'d> {
+    pub const unsafe fn clone_unchecked(&self) -> Flex<'d> {
         Flex {
             pin: self.pin.clone_unchecked(),
         }
@@ -191,7 +184,7 @@ impl<'d> Flex<'d> {
 
     /// Get the current pin input level.
     #[inline]
-    pub fn get_level(&self) -> Level {
+    pub fn level(&self) -> Level {
         self.is_high().into()
     }
 
@@ -210,7 +203,7 @@ impl<'d> Flex<'d> {
 
     /// Get the current output level.
     #[inline]
-    pub fn get_output_level(&self) -> Level {
+    pub fn output_level(&self) -> Level {
         self.is_set_high().into()
     }
 
@@ -343,7 +336,7 @@ impl<'d> Input<'d> {
     /// peripheral token. The pin should already be configured as an input via
     /// [`Flex::set_as_input()`].
     #[inline]
-    pub fn from_flex(pin: Flex<'d>) -> Self {
+    pub const fn from_flex(pin: Flex<'d>) -> Self {
         Self { pin }
     }
 
@@ -361,8 +354,8 @@ impl<'d> Input<'d> {
 
     /// Get the current pin input level.
     #[inline]
-    pub fn get_level(&self) -> Level {
-        self.pin.get_level()
+    pub fn level(&self) -> Level {
+        self.pin.level()
     }
 }
 
@@ -448,8 +441,8 @@ impl<'d> Output<'d> {
 
     /// What level output is set to
     #[inline]
-    pub fn get_output_level(&self) -> Level {
-        self.pin.get_output_level()
+    pub fn output_level(&self) -> Level {
+        self.pin.output_level()
     }
 
     /// Toggle pin output
@@ -509,8 +502,8 @@ impl<'d> OutputOpenDrain<'d> {
 
     /// Get the current pin input level.
     #[inline]
-    pub fn get_level(&self) -> Level {
-        self.pin.get_level()
+    pub fn level(&self) -> Level {
+        self.pin.level()
     }
 
     /// Set the output as high.
@@ -545,8 +538,8 @@ impl<'d> OutputOpenDrain<'d> {
 
     /// Get the current output level.
     #[inline]
-    pub fn get_output_level(&self) -> Level {
-        self.pin.get_output_level()
+    pub fn output_level(&self) -> Level {
+        self.pin.output_level()
     }
 
     /// Toggle pin output
@@ -614,6 +607,15 @@ impl AfType {
             mode: speed.to_mode(),
             cnf: output_type.to_cnf_out().to_bits(),
             pull: Pull::None,
+        }
+    }
+
+    /// Output with output type, speed and pull-up or pull-down;
+    pub const fn output_pull(output_type: OutputType, speed: Speed, pull: Pull) -> Self {
+        Self {
+            mode: speed.to_mode(),
+            cnf: output_type.to_cnf_out().to_bits(),
+            pull,
         }
     }
 }
@@ -824,6 +826,7 @@ pub(crate) trait SealedPin {
     }
 
     /// Get the pull-up configuration.
+    #[allow(unused)]
     #[inline]
     fn pull(&self) -> Pull {
         critical_section::with(|_| get_pull(self.pin_port()))
@@ -863,6 +866,7 @@ pub trait Pin: PeripheralType + Into<AnyPin> + SealedPin + Sized + 'static {
 }
 
 /// Type-erased GPIO pin.
+#[derive(Debug)]
 pub struct AnyPin {
     pin_port: PinNumber,
 }
@@ -1166,12 +1170,14 @@ impl<'d> embedded_hal_1::digital::ErrorType for Output<'d> {
 impl<'d> embedded_hal_1::digital::OutputPin for Output<'d> {
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 }
 
@@ -1207,12 +1213,14 @@ impl<'d> embedded_hal_1::digital::InputPin for OutputOpenDrain<'d> {
 impl<'d> embedded_hal_1::digital::OutputPin for OutputOpenDrain<'d> {
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 }
 
@@ -1244,12 +1252,14 @@ impl<'d> embedded_hal_1::digital::InputPin for Flex<'d> {
 impl<'d> embedded_hal_1::digital::OutputPin for Flex<'d> {
     #[inline]
     fn set_high(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_high())
+        self.set_high();
+        Ok(())
     }
 
     #[inline]
     fn set_low(&mut self) -> Result<(), Self::Error> {
-        Ok(self.set_low())
+        self.set_low();
+        Ok(())
     }
 }
 

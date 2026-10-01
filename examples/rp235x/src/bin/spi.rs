@@ -6,13 +6,15 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::spi::Spi;
+use embassy_rp::time::Hertz;
 use embassy_rp::{gpio, spi};
 use gpio::{Level, Output};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Hello World!");
@@ -26,8 +28,8 @@ async fn main(_spawner: Spawner) {
 
     // create SPI
     let mut config = spi::Config::default();
-    config.frequency = 2_000_000;
-    let mut spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, config);
+    config.frequency = Hertz(2_000_000);
+    let mut spi = Spi::new_blocking(p.SPI1, clk, mosi, miso, config).unwrap();
 
     // Configure CS
     let mut cs = Output::new(touch_cs, Level::Low);

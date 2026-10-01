@@ -218,6 +218,36 @@ impl<'a> Lpuart<'a, Buffered> {
             config,
         )
     }
+
+    /// Write data asynchronously
+    pub async fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
+        self.tx.write(buf).await
+    }
+
+    /// Flush the TX buffer and wait for transmission to complete
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.tx.flush().await
+    }
+
+    /// Try to write without blocking
+    ///
+    /// May return 0 if the provided buf is zero, or there are no bytes available
+    pub fn try_write(&mut self, buf: &[u8]) -> usize {
+        self.tx.try_write(buf)
+    }
+
+    /// Read data asynchronously
+    pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
+        self.rx.read(buf).await
+    }
+
+    /// Try to read without blocking
+    ///
+    /// May return zero bytes if none are available, or the provided buffer is
+    /// of zero length.
+    pub fn try_read(&mut self, buf: &mut [u8]) -> usize {
+        self.rx.try_read(buf)
+    }
 }
 
 impl<'a> LpuartTx<'a, Buffered> {
@@ -314,7 +344,7 @@ impl<'a> LpuartTx<'a, Buffered> {
             .wait_for(|| {
                 let tx_empty = self.state.tx_buf.is_empty();
                 let fifo_empty = self.info.regs().water().read().txcount() == 0;
-                let tc_complete = self.info.regs().stat().read().tc() == Tc::COMPLETE;
+                let tc_complete = self.info.regs().stat().read().tc() == Tc::Complete;
                 tx_empty && fifo_empty && tc_complete
             })
             .await?)
@@ -577,7 +607,7 @@ impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for Buffere
                 // tx fifo size is 2^param.txfifo, we want to pop enough to fill
                 // the fifo, minus whatever is in there now.
                 (1 << param.txfifo()) - regs.water().read().txcount()
-            } else if regs.stat().read().tdre() != Tdre::TXDATA {
+            } else if regs.stat().read().tdre() != Tdre::Txdata {
                 1
             } else {
                 0
@@ -611,7 +641,7 @@ impl<T: Instance> crate::interrupt::typelevel::Handler<T::Interrupt> for Buffere
         }
 
         // Handle transmission complete
-        if ctrl.tcie() && regs.stat().read().tc() == Tc::COMPLETE {
+        if ctrl.tcie() && regs.stat().read().tc() == Tc::Complete {
             T::PERF_INT_WAKE_INCR();
             state.tx_waker.wake();
 
@@ -641,16 +671,16 @@ impl embedded_io_async::Read for LpuartRx<'_, Buffered> {
 
 impl embedded_io_async::Write for Lpuart<'_, Buffered> {
     async fn write(&mut self, buf: &[u8]) -> core::result::Result<usize, Self::Error> {
-        self.tx.write(buf).await
+        self.write(buf).await
     }
 
     async fn flush(&mut self) -> core::result::Result<(), Self::Error> {
-        self.tx.flush().await
+        self.flush().await
     }
 }
 
 impl embedded_io_async::Read for Lpuart<'_, Buffered> {
     async fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
-        self.rx.read(buf).await
+        self.read(buf).await
     }
 }

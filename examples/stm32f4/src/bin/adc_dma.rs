@@ -2,11 +2,12 @@
 #![no_main]
 use cortex_m::singleton;
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, AdcChannel, RingBufferedAdc, SampleTime};
+use embassy_stm32::adc::{Adc, AdcChannel, Config, RingBufferedAdc, SampleTime};
 use embassy_stm32::{Peripherals, bind_interrupts, dma, peripherals};
 use embassy_time::Instant;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     DMA2_STREAM0 => dma::InterruptHandler<peripherals::DMA2_CH0>;
@@ -25,16 +26,16 @@ async fn adc_task(mut p: Peripherals) {
     let adc_data: &mut [u16; ADC_BUF_SIZE] = singleton!(ADCDAT : [u16; ADC_BUF_SIZE] = [0u16; ADC_BUF_SIZE]).unwrap();
     let adc_data2: &mut [u16; ADC_BUF_SIZE] = singleton!(ADCDAT2 : [u16; ADC_BUF_SIZE] = [0u16; ADC_BUF_SIZE]).unwrap();
 
-    let adc = Adc::new_with_config(p.ADC1, Default::default());
-    let adc2 = Adc::new_with_config(p.ADC2, Default::default());
+    let adc = Adc::new_blocking(p.ADC1, Config::default());
+    let adc2 = Adc::new_blocking(p.ADC2, Config::default());
 
     let mut adc: RingBufferedAdc<_> = adc.into_ring_buffered(
         p.DMA2_CH0,
         adc_data,
         Irqs,
         [
-            (p.PA0.degrade_adc(), SampleTime::Cycles112),
-            (p.PA2.degrade_adc(), SampleTime::Cycles112),
+            (p.PA0.reborrow_adc(), SampleTime::Cycles112),
+            (p.PA2.reborrow_adc(), SampleTime::Cycles112),
         ]
         .into_iter(),
         None,
@@ -44,8 +45,8 @@ async fn adc_task(mut p: Peripherals) {
         adc_data2,
         Irqs,
         [
-            (p.PA1.degrade_adc(), SampleTime::Cycles112),
-            (p.PA3.degrade_adc(), SampleTime::Cycles112),
+            (p.PA1.reborrow_adc(), SampleTime::Cycles112),
+            (p.PA3.reborrow_adc(), SampleTime::Cycles112),
         ]
         .into_iter(),
         None,
@@ -61,8 +62,8 @@ async fn adc_task(mut p: Peripherals) {
     let mut tic = Instant::now();
     let mut buffer1 = [0u16; 512];
     let mut buffer2 = [0u16; 512];
-    let _ = adc.start();
-    let _ = adc2.start();
+    adc.start();
+    adc2.start();
     loop {
         match adc.read(&mut buffer1).await {
             Ok(_data) => {
@@ -78,7 +79,7 @@ async fn adc_task(mut p: Peripherals) {
             Err(e) => {
                 warn!("Error: {:?}", e);
                 buffer1 = [0u16; 512];
-                let _ = adc.start();
+                adc.start();
             }
         }
 
@@ -96,7 +97,7 @@ async fn adc_task(mut p: Peripherals) {
             Err(e) => {
                 warn!("Error: {:?}", e);
                 buffer2 = [0u16; 512];
-                let _ = adc2.start();
+                adc2.start();
             }
         }
     }

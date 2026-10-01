@@ -25,7 +25,7 @@ use crate::{Peri, interrupt};
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<T>,
 }
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
@@ -247,7 +247,7 @@ mod btable {
 struct EndpointBuffer<T: Instance> {
     addr: u16,
     len: u16,
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<T>,
 }
 
 impl<T: Instance> EndpointBuffer<T> {
@@ -296,25 +296,25 @@ impl<'d, T: Instance> Driver<'d, T> {
     #[cfg(not(stm32l1))]
     pub fn new_with_sof(
         _usb: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         dp: Peri<'d, impl DpPin<T>>,
         dm: Peri<'d, impl DmPin<T>>,
         sof: Peri<'d, impl SofPin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         {
             use crate::gpio::{AfType, OutputType, Speed};
             set_as_af!(sof, AfType::output(OutputType::PushPull, Speed::VeryHigh));
         }
 
-        Self::new(_usb, _irq, dp, dm)
+        Self::new(_usb, dp, dm, _irq)
     }
 
     /// Create a new USB driver.
     pub fn new(
         _usb: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         dp: Peri<'d, impl DpPin<T>>,
         dm: Peri<'d, impl DmPin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         super::common_init::<T>();
 
@@ -441,7 +441,7 @@ impl<'d, T: Instance> Driver<'d, T> {
                 EndpointBuffer {
                     addr,
                     len,
-                    _phantom: PhantomData,
+                    _marker: PhantomData,
                 }
             }
             Direction::In => {
@@ -473,7 +473,7 @@ impl<'d, T: Instance> Driver<'d, T> {
                 EndpointBuffer {
                     addr,
                     len,
-                    _phantom: PhantomData,
+                    _marker: PhantomData,
                 }
             }
         };
@@ -481,7 +481,7 @@ impl<'d, T: Instance> Driver<'d, T> {
         trace!("  index={} addr={} len={}", index, buf.addr, buf.len);
 
         Ok(Endpoint {
-            _phantom: PhantomData,
+            _marker: PhantomData,
             info: EndpointInfo {
                 addr: EndpointAddress::from_parts(index, D::dir()),
                 ep_type,
@@ -560,7 +560,7 @@ impl<'d, T: Instance> driver::Driver<'d> for Driver<'d, T> {
                 inited: false,
             },
             ControlPipe {
-                _phantom: PhantomData,
+                _marker: PhantomData,
                 max_packet_size: control_max_packet_size,
                 ep_out,
                 ep_in,
@@ -739,7 +739,24 @@ impl<'d, T: Instance> driver::Bus for Bus<'d, T> {
     async fn disable(&mut self) {}
 
     async fn remote_wakeup(&mut self) -> Result<(), Unsupported> {
-        Err(Unsupported)
+        let regs = T::regs();
+        // Wake transceiver from low-power mode
+        regs.cntr().modify(|w| w.set_lpmode(false));
+        // Drive K-state while FSUSP is still set
+        regs.cntr().modify(|w| w.set_resume(true));
+        #[cfg(feature = "time")]
+        embassy_time::Timer::after_millis(10).await;
+        #[cfg(not(feature = "time"))]
+        {
+            let freq = unsafe { crate::rcc::get_freqs() }.sys.to_hertz().unwrap().0 as u64;
+            let cycles = freq * 10 / 1_000;
+            cortex_m::asm::delay(cycles as u32);
+        }
+        regs.cntr().modify(|w| w.set_resume(false));
+        // Exit forced-suspend so the peripheral can handle the
+        // host's resume response
+        regs.cntr().modify(|w| w.set_fsusp(false));
+        Ok(())
     }
 }
 
@@ -778,7 +795,7 @@ enum PacketBuffer {
 
 /// USB endpoint.
 pub struct Endpoint<'d, T: Instance, D> {
-    _phantom: PhantomData<(&'d mut T, D)>,
+    _marker: PhantomData<(&'d mut T, D)>,
     info: EndpointInfo,
     buf: EndpointBuffer<T>,
 }
@@ -1033,7 +1050,7 @@ impl<'d, T: Instance> driver::EndpointIn for Endpoint<'d, T, In> {
 
 /// USB control pipe.
 pub struct ControlPipe<'d, T: Instance> {
-    _phantom: PhantomData<&'d mut T>,
+    _marker: PhantomData<&'d mut T>,
     max_packet_size: u16,
     ep_in: Endpoint<'d, T, In>,
     ep_out: Endpoint<'d, T, Out>,

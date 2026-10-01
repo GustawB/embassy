@@ -4,10 +4,11 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::twis::{self, Command, Twis};
 use embassy_nrf::{bind_interrupts, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     TWISPI0 => twis::InterruptHandler<peripherals::TWISPI0>;
@@ -19,7 +20,7 @@ async fn main(_spawner: Spawner) {
 
     let mut config = twis::Config::default();
     config.address0 = 0x55; // Set i2c address
-    let mut i2c = Twis::new(p.TWISPI0, Irqs, p.P0_03, p.P0_04, config);
+    let mut i2c = Twis::new(p.TWISPI0, p.P0_04, p.P0_03, Irqs, config);
 
     info!("Listening...");
     loop {

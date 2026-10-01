@@ -2,12 +2,14 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_mcxa as hal;
 use embassy_time::Timer;
 use hal::clocks::config::Div8;
 use hal::config::Config;
 use hal::spi::controller::{self, Spi};
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -20,7 +22,7 @@ async fn main(_spawner: Spawner) {
 
     let mut config = controller::Config::default();
     config.frequency = 1_000_000;
-    let mut spi = Spi::new_blocking(p.LPSPI1, p.P3_10, p.P3_8, p.P3_9, config).unwrap();
+    let mut spi = Spi::new_blocking(p.LPSPI1, p.P3_10, p.P3_9, p.P3_8, config).unwrap();
 
     let mut rx_buf = [0u8; 32];
     let tx_buf = [0x55u8; 32];

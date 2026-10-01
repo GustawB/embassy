@@ -4,6 +4,7 @@
 use core::cell::{Cell, RefCell};
 
 use defmt::{panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{Config, bind_interrupts, interrupt, peripherals, timer, usb};
@@ -16,14 +17,14 @@ use embassy_usb::class::uac1::speaker::{self, Speaker};
 use embassy_usb::driver::EndpointError;
 use heapless::Vec;
 use micromath::F32Ext;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USB_DRD_FS => usb::InterruptHandler<peripherals::USB>;
 });
 
-static TIMER: Mutex<CriticalSectionRawMutex, RefCell<Option<timer::low_level::Timer<peripherals::TIM5>>>> =
+static TIMER: Mutex<CriticalSectionRawMutex, RefCell<Option<timer::low_level::Timer<peripherals::TIM2>>>> =
     Mutex::new(RefCell::new(None));
 
 // A counter signal that is written by the feedback timer, once every `FEEDBACK_REFRESH_PERIOD`.
@@ -211,7 +212,7 @@ async fn usb_control_task(control_monitor: speaker::ControlMonitor<'static>) {
 ///
 /// This gives an (ideal) counter value of 336.000 for every update of the `FEEDBACK_SIGNAL`.
 #[interrupt]
-fn TIM5() {
+fn TIM2() {
     static LAST_TICKS: Mutex<CriticalSectionRawMutex, Cell<u32>> = Mutex::new(Cell::new(0));
     static FRAME_COUNT: Mutex<CriticalSectionRawMutex, Cell<usize>> = Mutex::new(Cell::new(0));
 
@@ -237,7 +238,10 @@ fn TIM5() {
         };
 
         // Clear trigger interrupt flag.
-        timer.sr().modify(|r| r.set_tif(false));
+        timer.sr().write(|r| {
+            r.0 = 0xFFFF_FFFF;
+            r.set_tif(false);
+        });
     });
 }
 
@@ -301,7 +305,7 @@ async fn main(spawner: Spawner) {
     static STATE: StaticCell<speaker::State> = StaticCell::new();
     let state = STATE.init(speaker::State::new());
 
-    let usb_driver = usb::Driver::new(p.USB, Irqs, p.PA12, p.PA11);
+    let usb_driver = usb::Driver::new(p.USB, p.PA12, p.PA11, Irqs);
 
     // Basic USB device configuration
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -319,7 +323,11 @@ async fn main(spawner: Spawner) {
     );
 
     // Create the UAC1 Speaker class components
-    let (stream, feedback, control_monitor) = Speaker::new(
+    let Speaker {
+        stream,
+        feedback,
+        control_monitor,
+    } = Speaker::new(
         &mut builder,
         state,
         USB_MAX_PACKET_SIZE as u16,
@@ -341,28 +349,28 @@ async fn main(spawner: Spawner) {
     let (sender, receiver) = channel.split();
 
     // Run a timer for counting between SOF interrupts.
-    let mut tim5 = timer::low_level::Timer::new(p.TIM5);
-    tim5.set_tick_freq(Hertz(FEEDBACK_COUNTER_TICK_RATE));
-    tim5.set_trigger_source(timer::low_level::TriggerSource::Itr12); // The USB SOF signal.
+    let mut tim = timer::low_level::Timer::new(p.TIM2);
+    tim.set_tick_freq(Hertz(FEEDBACK_COUNTER_TICK_RATE));
+    tim.set_trigger_source(timer::low_level::TriggerSource::Itr12); // The USB SOF signal.
 
     const TIMER_CHANNEL: timer::Channel = timer::Channel::Ch1;
-    tim5.set_input_ti_selection(TIMER_CHANNEL, timer::low_level::InputTISelection::TRC);
-    tim5.set_input_capture_prescaler(TIMER_CHANNEL, 0);
-    tim5.set_input_capture_filter(TIMER_CHANNEL, timer::low_level::FilterValue::FckIntN2);
+    tim.set_input_capture_selection(TIMER_CHANNEL, timer::low_level::InputCaptureSelection::TRC);
+    tim.set_input_capture_prescaler(TIMER_CHANNEL, 0);
+    tim.set_input_capture_filter(TIMER_CHANNEL, timer::low_level::FilterValue::FckIntN2);
 
     // Reset all interrupt flags.
-    tim5.regs_gp32().sr().write(|r| r.0 = 0);
+    tim.regs_gp32().sr().write(|r| r.0 = 0);
 
-    tim5.enable_channel(TIMER_CHANNEL, true);
-    tim5.enable_input_interrupt(TIMER_CHANNEL, true);
+    tim.enable_channel(TIMER_CHANNEL, true);
+    tim.enable_input_interrupt(TIMER_CHANNEL, true);
 
-    tim5.start();
+    tim.start();
 
-    TIMER.lock(|p| p.borrow_mut().replace(tim5));
+    TIMER.lock(|p| p.borrow_mut().replace(tim));
 
-    // Unmask the TIM5 interrupt.
+    // Unmask the TIM2 interrupt.
     unsafe {
-        cortex_m::peripheral::NVIC::unmask(interrupt::TIM5);
+        cortex_m::peripheral::NVIC::unmask(interrupt::TIM2);
     }
 
     // Launch USB audio tasks.

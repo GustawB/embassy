@@ -23,6 +23,40 @@ fn rtc() -> pac::rtc::Rtc {
     pac::RTC1
 }
 
+#[cfg(feature = "time-driver-grtc")]
+const _: () = {
+    let selected = cfg!(feature = "time-driver-grtc-cc0") as u8
+        + cfg!(feature = "time-driver-grtc-cc1") as u8
+        + cfg!(feature = "time-driver-grtc-cc2") as u8
+        + cfg!(feature = "time-driver-grtc-cc3") as u8
+        + cfg!(feature = "time-driver-grtc-cc4") as u8
+        + cfg!(feature = "time-driver-grtc-cc5") as u8
+        + cfg!(feature = "time-driver-grtc-cc6") as u8
+        + cfg!(feature = "time-driver-grtc-cc7") as u8
+        + cfg!(feature = "time-driver-grtc-cc8") as u8
+        + cfg!(feature = "time-driver-grtc-cc9") as u8
+        + cfg!(feature = "time-driver-grtc-cc10") as u8
+        + cfg!(feature = "time-driver-grtc-cc11") as u8;
+    core::assert!(selected <= 1, "select at most one time-driver-grtc-ccN feature");
+};
+
+// GRTC defaults to CC11; RTC1 uses CC0. The selected channel must be reserved for the driver.
+const TIME_DRIVER_CC_N: usize = core::cfg_select! {
+    not(feature = "_grtc") => 0,
+    feature = "time-driver-grtc-cc0" => 0,
+    feature = "time-driver-grtc-cc1" => 1,
+    feature = "time-driver-grtc-cc2" => 2,
+    feature = "time-driver-grtc-cc3" => 3,
+    feature = "time-driver-grtc-cc4" => 4,
+    feature = "time-driver-grtc-cc5" => 5,
+    feature = "time-driver-grtc-cc6" => 6,
+    feature = "time-driver-grtc-cc7" => 7,
+    feature = "time-driver-grtc-cc8" => 8,
+    feature = "time-driver-grtc-cc9" => 9,
+    feature = "time-driver-grtc-cc10" => 10,
+    _ => 11,
+};
+
 // On nRF54L/LM GRTC, SYSCOUNTER[n], INTENSETn/INTENCLRn/INTENn, and the
 // GRTC_n interrupt all index by "domain":
 //   FLPR              = 0
@@ -209,7 +243,7 @@ impl RtcDriver {
         // GRTC initialization for nRF54L/LM series.
         #[cfg(feature = "_grtc")]
         {
-            let n = 0;
+            let n = TIME_DRIVER_CC_N;
 
             // 1. Disable the SYSCOUNTER before reconfiguring
             r.mode().modify(|w| w.set_syscounteren(false));
@@ -218,8 +252,10 @@ impl RtcDriver {
             r.events_compare(n).write_value(0);
             r.intenclr(DOMAIN_IDX).write(|w| w.0 = compare_n(n));
 
-            // 3. Clear and start the counter.
+            // 3. Clear and start the counter when lftimer is ready
+            while !r.status().lftimer().read().ready() {}
             r.tasks_clear().write_value(1);
+            while !r.status().lftimer().read().ready() {}
             r.tasks_start().write_value(1);
 
             // 4. Configure the sleep/wake mechanism and enable the SYSCOUNTER.
@@ -244,14 +280,7 @@ impl RtcDriver {
             });
 
             // 5. Wait for SYSCOUNTER readiness
-            r.syscounter(DOMAIN_IDX).active().write(|w| w.set_active(true));
-            loop {
-                let _ = r.syscounter(DOMAIN_IDX).syscounterl().read();
-                if r.syscounter(DOMAIN_IDX).syscounterh().read().busy() == Busy::Ready {
-                    break;
-                }
-            }
-            r.syscounter(DOMAIN_IDX).active().write(|w| w.set_active(false));
+            let _ = syscounter();
 
             // 6. Enable the domain IRQ.
             #[cfg(feature = "_ns")]
@@ -282,7 +311,7 @@ impl RtcDriver {
             self.next_period();
         }
 
-        let n = 0;
+        let n = TIME_DRIVER_CC_N;
         if r.events_compare(n).read() == 1 {
             r.events_compare(n).write_value(0);
             critical_section::with(|cs| {
@@ -299,7 +328,7 @@ impl RtcDriver {
             self.period.store(period, Ordering::Relaxed);
             let t = (period as u64) << 23;
 
-            let n = 0;
+            let n = TIME_DRIVER_CC_N;
             let alarm = &self.alarms.borrow(cs);
             let at = alarm.timestamp.get();
 
@@ -311,7 +340,7 @@ impl RtcDriver {
     }
 
     fn trigger_alarm(&self, cs: CriticalSection) {
-        let n = 0;
+        let n = TIME_DRIVER_CC_N;
         let r = rtc();
         #[cfg(not(feature = "_grtc"))]
         r.intenclr().write(|w| w.0 = compare_n(n));
@@ -329,20 +358,11 @@ impl RtcDriver {
     }
 
     fn set_alarm(&self, cs: CriticalSection, timestamp: u64) -> bool {
-        let n = 0;
+        let n = TIME_DRIVER_CC_N;
         let alarm = &self.alarms.borrow(cs);
         alarm.timestamp.set(timestamp);
 
         let r = rtc();
-
-        // GRTC: SYSCOUNTER[n].ACTIVE is used to keep the SYSCOUNTER running
-        // while an alarm is armed.  When no alarm is pending (u64::MAX),
-        // clear ACTIVE so the SYSCOUNTER can sleep to save power.
-        #[cfg(feature = "_grtc")]
-        if timestamp == u64::MAX {
-            r.syscounter(DOMAIN_IDX).active().write(|w| w.set_active(false));
-            return true;
-        }
 
         loop {
             let t = self.now();
@@ -352,10 +372,7 @@ impl RtcDriver {
                 #[cfg(not(feature = "_grtc"))]
                 r.intenclr().write(|w| w.0 = compare_n(n));
                 #[cfg(feature = "_grtc")]
-                {
-                    r.intenclr(DOMAIN_IDX).write(|w| w.0 = compare_n(n));
-                    r.syscounter(DOMAIN_IDX).active().write(|w| w.set_active(false));
-                }
+                r.intenclr(DOMAIN_IDX).write(|w| w.0 = compare_n(n));
 
                 alarm.timestamp.set(u64::MAX);
 
@@ -405,9 +422,6 @@ impl RtcDriver {
             // can write the expected timestamp and be sure the alarm is triggered.
             #[cfg(feature = "_grtc")]
             {
-                // Set ACTIVE to keep SYSCOUNTER running during WFE/WFI so the CC compare can fire and wake the CPU.
-                // ACTIVE is cleared when no alarm is pending (u64::MAX) or expired.
-                r.syscounter(DOMAIN_IDX).active().write(|w| w.set_active(true));
                 r.events_compare(n).write_value(0);
                 // Writes to CC[n].CCL disable the corresponding compare channel and writes to CC[n].CCH enable it.
                 // So CC[n].CCL must be written first.

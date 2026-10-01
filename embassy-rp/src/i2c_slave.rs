@@ -5,8 +5,10 @@ use core::task::Poll;
 
 use pac::i2c;
 
-use crate::i2c::{AbortReason, FIFO_SIZE, Instance, InterruptHandler, SclPin, SdaPin, set_up_i2c_pin};
-use crate::interrupt::typelevel::{Binding, Interrupt};
+use crate::i2c::{AbortReason, FIFO_SIZE, Info, Instance, InterruptHandler, SclPin, SdaPin, set_up_i2c_pin};
+use crate::interrupt::InterruptExt;
+use crate::interrupt::typelevel::Binding;
+use crate::mode::{Async, Blocking, Mode};
 use crate::{Peri, pac};
 
 /// I2C error
@@ -58,7 +60,7 @@ pub enum ReadStatus {
 
 /// Slave Configuration
 #[non_exhaustive]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub struct Config {
     /// Target Address
@@ -89,34 +91,58 @@ impl Default for Config {
 }
 
 /// I2CSlave driver.
-pub struct I2cSlave<'d, T: Instance> {
-    phantom: PhantomData<&'d mut T>,
+pub struct I2cSlave<'d, M: Mode> {
+    info: &'static Info,
     pending_byte: Option<u8>,
     config: Config,
+    phantom: PhantomData<(&'d mut (), M)>,
 }
 
-impl<'d, T: Instance> I2cSlave<'d, T> {
-    /// Create a new instance.
-    pub fn new(
+impl<'d> I2cSlave<'d, Blocking> {
+    /// Create a new instance in blocking mode.
+    pub fn new_blocking<T: Instance>(
+        _peri: Peri<'d, T>,
+        scl: Peri<'d, impl SclPin<T>>,
+        sda: Peri<'d, impl SdaPin<T>>,
+        config: Config,
+    ) -> Self {
+        Self::new_inner(T::info(), &scl, &sda, config, false)
+    }
+}
+
+impl<'d> I2cSlave<'d, Async> {
+    /// Create a new instance in async mode.
+    pub fn new<T: Instance>(
         _peri: Peri<'d, T>,
         scl: Peri<'d, impl SclPin<T>>,
         sda: Peri<'d, impl SdaPin<T>>,
         _irq: impl Binding<T::Interrupt, InterruptHandler<T>>,
         config: Config,
     ) -> Self {
+        Self::new_inner(T::info(), &scl, &sda, config, true)
+    }
+}
+
+impl<'d, M: Mode> I2cSlave<'d, M> {
+    fn new_inner<S, D>(info: &'static Info, scl: &S, sda: &D, config: Config, enable_irq: bool) -> Self
+    where
+        S: core::ops::Deref<Target: crate::gpio::Pin>,
+        D: core::ops::Deref<Target: crate::gpio::Pin>,
+    {
         assert!(config.addr != 0);
 
         // Configure SCL & SDA pins
-        set_up_i2c_pin(&scl, config.scl_pullup);
-        set_up_i2c_pin(&sda, config.sda_pullup);
+        set_up_i2c_pin(scl, config.scl_pullup);
+        set_up_i2c_pin(sda, config.sda_pullup);
 
         let mut ret = Self {
-            phantom: PhantomData,
+            info,
             pending_byte: None,
             config,
+            phantom: PhantomData,
         };
 
-        ret.reset();
+        ret.reset_inner(enable_irq);
 
         ret
     }
@@ -125,9 +151,17 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
     /// You can recover the bus by calling this function, but doing so will almost certainly cause
     /// an i/o error in the master.
     pub fn reset(&mut self) {
-        let p = T::regs();
+        // Interrupts are only ever enabled for `Async` drivers, and `enable()` on an
+        // already-enabled interrupt is harmless, so re-enabling matches the original state.
+        let enable_irq = self.info.interrupt.is_enabled();
+        self.reset_inner(enable_irq);
+    }
 
-        let reset = T::reset();
+    fn reset_inner(&mut self, enable_irq: bool) {
+        let info = self.info;
+        let p = info.regs;
+
+        let reset = (info.reset)();
         crate::reset::reset(reset);
         crate::reset::unreset_wait(reset);
 
@@ -166,36 +200,29 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
 
         // mask everything initially
         p.ic_intr_mask().write_value(i2c::regs::IcIntrMask(0));
-        T::Interrupt::unpend();
-        unsafe { T::Interrupt::enable() };
+        info.interrupt.unpend();
+        if enable_irq {
+            unsafe { info.interrupt.enable() };
+        }
     }
 
-    /// Calls `f` to check if we are ready or not.
-    /// If not, `g` is called once(to eg enable the required interrupts).
-    /// The waker will always be registered prior to calling `f`.
+    /// Spins on `f` until it is ready. Used by the `Blocking` methods, where no
+    /// interrupt is bound and so nothing would ever wake us.
     #[inline(always)]
-    async fn wait_on<F, U, G>(&mut self, mut f: F, mut g: G) -> U
+    fn blocking_wait_on<F, U>(&mut self, mut f: F) -> U
     where
         F: FnMut(&mut Self) -> Poll<U>,
-        G: FnMut(&mut Self),
     {
-        future::poll_fn(|cx| {
-            // Register prior to checking the condition
-            T::waker().register(cx.waker());
-            let r = f(self);
-
-            if r.is_pending() {
-                g(self);
+        loop {
+            if let Poll::Ready(r) = f(self) {
+                return r;
             }
-
-            r
-        })
-        .await
+        }
     }
 
     #[inline(always)]
     fn drain_fifo(&mut self, buffer: &mut [u8], offset: &mut usize) {
-        let p = T::regs();
+        let p = self.info.regs;
 
         if let Some(pending) = self.pending_byte.take() {
             buffer[*offset] = pending;
@@ -224,150 +251,151 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
         }
     }
 
-    /// Wait asynchronously for commands from an I2C master.
-    /// `buffer` is provided in case master does a 'write', 'write read', or 'general call' and is unused for 'read'.
-    pub async fn listen(&mut self, buffer: &mut [u8]) -> Result<Command, Error> {
-        let p = T::regs();
-
-        // set rx fifo watermark to 1 byte
-        p.ic_rx_tl().write(|w| w.set_rx_tl(0));
-
-        let mut len = 0;
-        self.wait_on(
-            |me| {
-                let stat = p.ic_raw_intr_stat().read();
-                trace!("ls:{:013b} len:{}", stat.0, len);
-
-                if p.ic_rxflr().read().rxflr() > 0 || me.pending_byte.is_some() {
-                    me.drain_fifo(buffer, &mut len);
-                    // we're receiving data, set rx fifo watermark to 12 bytes (3/4 full) to reduce interrupt noise
-                    p.ic_rx_tl().write(|w| w.set_rx_tl(11));
-                }
-
-                if buffer.len() == len {
-                    if stat.gen_call() {
-                        return Poll::Ready(Err(Error::PartialGeneralCall(buffer.len())));
-                    } else {
-                        return Poll::Ready(Err(Error::PartialWrite(buffer.len())));
-                    }
-                }
-                trace!("len:{}, pend:{:?}", len, me.pending_byte);
-                if me.pending_byte.is_some() {
-                    warn!("pending")
-                }
-
-                if stat.restart_det() && stat.rd_req() {
-                    p.ic_clr_restart_det().read();
-                    Poll::Ready(Ok(Command::WriteRead(len)))
-                } else if stat.gen_call() && stat.stop_det() && len > 0 {
-                    p.ic_clr_gen_call().read();
-                    p.ic_clr_stop_det().read();
-                    Poll::Ready(Ok(Command::GeneralCall(len)))
-                } else if stat.stop_det() && len > 0 {
-                    p.ic_clr_stop_det().read();
-                    Poll::Ready(Ok(Command::Write(len)))
-                } else if stat.rd_req() {
-                    p.ic_clr_stop_det().read();
-                    p.ic_clr_restart_det().read();
-                    p.ic_clr_gen_call().read();
-                    Poll::Ready(Ok(Command::Read))
-                } else if stat.stop_det() {
-                    // clear stuck stop bit
-                    // This can happen if the SDA/SCL pullups are enabled after calling this func
-                    p.ic_clr_stop_det().read();
-                    Poll::Pending
-                } else {
-                    Poll::Pending
-                }
-            },
-            |_me| {
-                p.ic_intr_mask().write(|w| {
-                    w.set_m_stop_det(true);
-                    w.set_m_restart_det(true);
-                    w.set_m_gen_call(true);
-                    w.set_m_rd_req(true);
-                    w.set_m_rx_full(true);
-                });
-            },
-        )
-        .await
+    /// Arm the interrupt sources `poll_listen` waits on.
+    fn arm_listen(&mut self) {
+        self.info.regs.ic_intr_mask().write(|w| {
+            w.set_m_stop_det(true);
+            w.set_m_restart_det(true);
+            w.set_m_gen_call(true);
+            w.set_m_rd_req(true);
+            w.set_m_rx_full(true);
+        });
     }
 
-    /// Respond to an I2C master READ command, asynchronously.
-    pub async fn respond_to_read(&mut self, buffer: &[u8]) -> Result<ReadStatus, Error> {
-        let p = T::regs();
+    /// Arm the interrupt sources `poll_respond_to_read` waits on.
+    fn arm_respond_to_read(&mut self) {
+        self.info.regs.ic_intr_mask().write(|w| {
+            w.set_m_rx_done(true);
+            w.set_m_tx_empty(true);
+            w.set_m_tx_abrt(true);
+        });
+    }
 
+    /// Prepare the hardware for a `listen`.
+    fn start_listen(&mut self) {
+        // set rx fifo watermark to 1 byte
+        self.info.regs.ic_rx_tl().write(|w| w.set_rx_tl(0));
+    }
+
+    fn poll_listen(&mut self, buffer: &mut [u8], len: &mut usize) -> Poll<Result<Command, Error>> {
+        let p = self.info.regs;
+        let stat = p.ic_raw_intr_stat().read();
+        trace!("ls:{:013b} len:{}", stat.0, *len);
+
+        if p.ic_rxflr().read().rxflr() > 0 || self.pending_byte.is_some() {
+            self.drain_fifo(buffer, len);
+            // we're receiving data, set rx fifo watermark to 12 bytes (3/4 full) to reduce interrupt noise
+            p.ic_rx_tl().write(|w| w.set_rx_tl(11));
+        }
+
+        if buffer.len() == *len {
+            if stat.gen_call() {
+                return Poll::Ready(Err(Error::PartialGeneralCall(buffer.len())));
+            } else {
+                return Poll::Ready(Err(Error::PartialWrite(buffer.len())));
+            }
+        }
+        trace!("len:{}, pend:{:?}", *len, self.pending_byte);
+        if self.pending_byte.is_some() {
+            warn!("pending")
+        }
+
+        if stat.restart_det() && stat.rd_req() {
+            p.ic_clr_restart_det().read();
+            Poll::Ready(Ok(Command::WriteRead(*len)))
+        } else if stat.gen_call() && stat.stop_det() && *len > 0 {
+            p.ic_clr_gen_call().read();
+            p.ic_clr_stop_det().read();
+            Poll::Ready(Ok(Command::GeneralCall(*len)))
+        } else if stat.stop_det() && *len > 0 {
+            p.ic_clr_stop_det().read();
+            Poll::Ready(Ok(Command::Write(*len)))
+        } else if stat.rd_req() {
+            p.ic_clr_stop_det().read();
+            p.ic_clr_restart_det().read();
+            p.ic_clr_gen_call().read();
+            Poll::Ready(Ok(Command::Read))
+        } else if stat.stop_det() {
+            // clear stuck stop bit
+            // This can happen if the SDA/SCL pullups are enabled after calling this func
+            p.ic_clr_stop_det().read();
+            Poll::Pending
+        } else {
+            Poll::Pending
+        }
+    }
+
+    fn poll_respond_to_read(&mut self, buffer: &[u8], bytes_written: &mut usize) -> Poll<Result<ReadStatus, Error>> {
+        let p = self.info.regs;
+        let stat = p.ic_raw_intr_stat().read();
+        trace!("rs:{:013b}", stat.0);
+
+        if stat.tx_abrt() {
+            if let Err(abort_reason) = self.read_and_clear_abort_reason() {
+                if let Error::Abort(AbortReason::TxNotEmpty(bytes)) = abort_reason {
+                    p.ic_clr_intr().read();
+                    return Poll::Ready(Ok(ReadStatus::LeftoverBytes(bytes)));
+                } else {
+                    return Poll::Ready(Err(abort_reason));
+                }
+            }
+        }
+
+        if *bytes_written < buffer.len() {
+            for _ in 0..((FIFO_SIZE - p.ic_txflr().read().txflr()) as usize).min(buffer.len() - *bytes_written) {
+                p.ic_clr_rd_req().read();
+                p.ic_data_cmd().write(|w| w.set_dat(buffer[*bytes_written]));
+                *bytes_written += 1;
+            }
+
+            Poll::Pending
+        } else if stat.rx_done() {
+            p.ic_clr_rx_done().read();
+            Poll::Ready(Ok(ReadStatus::Done))
+        } else if stat.rd_req() && stat.tx_empty() {
+            Poll::Ready(Ok(ReadStatus::NeedMoreBytes))
+        } else {
+            Poll::Pending
+        }
+    }
+
+    /// Wait for a command from an I2C master, blocking the caller until one arrives.
+    ///
+    /// `buffer` is provided in case the controller does a 'write', 'write read', or 'general
+    /// call', and is unused for 'read'.
+    pub fn blocking_listen(&mut self, buffer: &mut [u8]) -> Result<Command, Error> {
+        self.start_listen();
+        let mut len = 0;
+        self.blocking_wait_on(|me| me.poll_listen(buffer, &mut len))
+    }
+
+    /// Respond to an I2C master READ command, blocking the caller until done.
+    pub fn blocking_respond_to_read(&mut self, buffer: &[u8]) -> Result<ReadStatus, Error> {
         if buffer.is_empty() {
             return Err(Error::InvalidResponseBufferLength);
         }
-
-        let mut chunks = buffer.chunks(FIFO_SIZE as usize);
-
-        self.wait_on(
-            |me| {
-                let stat = p.ic_raw_intr_stat().read();
-                trace!("rs:{:013b}", stat.0);
-
-                if stat.tx_abrt() {
-                    if let Err(abort_reason) = me.read_and_clear_abort_reason() {
-                        if let Error::Abort(AbortReason::TxNotEmpty(bytes)) = abort_reason {
-                            p.ic_clr_intr().read();
-                            return Poll::Ready(Ok(ReadStatus::LeftoverBytes(bytes)));
-                        } else {
-                            return Poll::Ready(Err(abort_reason));
-                        }
-                    }
-                }
-
-                if let Some(chunk) = chunks.next() {
-                    for byte in chunk {
-                        p.ic_clr_rd_req().read();
-                        p.ic_data_cmd().write(|w| w.set_dat(*byte));
-                    }
-
-                    Poll::Pending
-                } else if stat.rx_done() {
-                    p.ic_clr_rx_done().read();
-                    Poll::Ready(Ok(ReadStatus::Done))
-                } else if stat.rd_req() && stat.tx_empty() {
-                    Poll::Ready(Ok(ReadStatus::NeedMoreBytes))
-                } else {
-                    Poll::Pending
-                }
-            },
-            |_me| {
-                p.ic_intr_mask().write(|w| {
-                    w.set_m_rx_done(true);
-                    w.set_m_tx_empty(true);
-                    w.set_m_tx_abrt(true);
-                })
-            },
-        )
-        .await
+        let mut bytes_written = 0;
+        self.blocking_wait_on(|me| me.poll_respond_to_read(buffer, &mut bytes_written))
     }
 
-    /// Respond to reads with the fill byte until the controller stops asking
-    pub async fn respond_till_stop(&mut self, fill: u8) -> Result<(), Error> {
-        // Send fill bytes a full fifo at a time, to reduce interrupt noise.
-        // This does mean we'll almost certainly abort the write, but since these are fill bytes,
-        // we don't care.
+    /// Respond to reads with the fill byte until the controller stops asking, blocking the caller.
+    pub fn blocking_respond_till_stop(&mut self, fill: u8) -> Result<(), Error> {
         let buff = [fill; FIFO_SIZE as usize];
         loop {
-            match self.respond_to_read(&buff).await {
+            match self.blocking_respond_to_read(&buff) {
                 Ok(ReadStatus::NeedMoreBytes) => (),
-                Ok(ReadStatus::LeftoverBytes(_)) => break Ok(()),
                 Ok(_) => break Ok(()),
                 Err(e) => break Err(e),
             }
         }
     }
 
-    /// Respond to a master read, then fill any remaining read bytes with `fill`
-    pub async fn respond_and_fill(&mut self, buffer: &[u8], fill: u8) -> Result<ReadStatus, Error> {
-        let resp_stat = self.respond_to_read(buffer).await?;
+    /// Respond to a master read, then fill any remaining read bytes with `fill`, blocking the caller.
+    pub fn blocking_respond_and_fill(&mut self, buffer: &[u8], fill: u8) -> Result<ReadStatus, Error> {
+        let resp_stat = self.blocking_respond_to_read(buffer)?;
 
         if resp_stat == ReadStatus::NeedMoreBytes {
-            self.respond_till_stop(fill).await?;
+            self.blocking_respond_till_stop(fill)?;
             Ok(ReadStatus::Done)
         } else {
             Ok(resp_stat)
@@ -376,7 +404,7 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
 
     #[inline(always)]
     fn read_and_clear_abort_reason(&mut self) -> Result<(), Error> {
-        let p = T::regs();
+        let p = self.info.regs;
         let abort_reason = p.ic_tx_abrt_source().read();
 
         if abort_reason.0 != 0 {
@@ -401,6 +429,83 @@ impl<'d, T: Instance> I2cSlave<'d, T> {
             Err(Error::Abort(reason))
         } else {
             Ok(())
+        }
+    }
+}
+
+impl<'d> I2cSlave<'d, Async> {
+    /// Calls `f` to check if we are ready or not.
+    /// If not, `g` is called once (to eg enable the required interrupts).
+    /// The waker will always be registered prior to calling `f`.
+    #[inline(always)]
+    async fn wait_on<F, U, G>(&mut self, mut f: F, mut g: G) -> U
+    where
+        F: FnMut(&mut Self) -> Poll<U>,
+        G: FnMut(&mut Self),
+    {
+        future::poll_fn(|cx| {
+            // Register prior to checking the condition
+            self.info.waker.register(cx.waker());
+            let r = f(self);
+
+            if r.is_pending() {
+                g(self);
+            }
+
+            r
+        })
+        .await
+    }
+
+    /// Wait for a command from an I2C master.
+    ///
+    /// `buffer` is provided in case the controller does a 'write', 'write read', or 'general
+    /// call', and is unused for 'read'.
+    pub async fn listen(&mut self, buffer: &mut [u8]) -> Result<Command, Error> {
+        self.start_listen();
+        let mut len = 0;
+        self.wait_on(|me| me.poll_listen(buffer, &mut len), |me| me.arm_listen())
+            .await
+    }
+
+    /// Respond to an I2C master READ command.
+    pub async fn respond_to_read(&mut self, buffer: &[u8]) -> Result<ReadStatus, Error> {
+        if buffer.is_empty() {
+            return Err(Error::InvalidResponseBufferLength);
+        }
+
+        let mut bytes_written = 0;
+        self.wait_on(
+            |me| me.poll_respond_to_read(buffer, &mut bytes_written),
+            |me| me.arm_respond_to_read(),
+        )
+        .await
+    }
+
+    /// Respond to reads with the fill byte until the controller stops asking.
+    pub async fn respond_till_stop(&mut self, fill: u8) -> Result<(), Error> {
+        // Send fill bytes a full fifo at a time, to reduce interrupt noise.
+        // This does mean we'll almost certainly abort the write, but since these are fill bytes,
+        // we don't care.
+        let buff = [fill; FIFO_SIZE as usize];
+        loop {
+            match self.respond_to_read(&buff).await {
+                Ok(ReadStatus::NeedMoreBytes) => (),
+                Ok(_) => break Ok(()),
+                Err(e) => break Err(e),
+            }
+        }
+    }
+
+    /// Respond to a master read, then fill any remaining read bytes with `fill`.
+    pub async fn respond_and_fill(&mut self, buffer: &[u8], fill: u8) -> Result<ReadStatus, Error> {
+        let resp_stat = self.respond_to_read(buffer).await?;
+
+        if resp_stat == ReadStatus::NeedMoreBytes {
+            self.respond_till_stop(fill).await?;
+            Ok(ReadStatus::Done)
+        } else {
+            Ok(resp_stat)
         }
     }
 }

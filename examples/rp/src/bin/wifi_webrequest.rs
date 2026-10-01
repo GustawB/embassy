@@ -9,16 +9,18 @@ use core::str::from_utf8;
 use cyw43::{JoinOptions, aligned_bytes};
 use cyw43_pio::{DEFAULT_CLOCK_DIVIDER, PioSpi};
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::dns::DnsSocket;
+use embassy_net::StackStorage;
+use embassy_net::dns::DnsClient;
 use embassy_net::tcp::client::{TcpClient, TcpClientState};
-use embassy_net::{Config, StackResources};
 use embassy_rp::clocks::RoscRng;
 use embassy_rp::gpio::{Level, Output};
-use embassy_rp::peripherals::{DMA_CH0, PIO0};
+use embassy_rp::peripherals::{DMA_CH0, DMA_CH1, PIO0};
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::{bind_interrupts, dma};
 use embassy_time::{Duration, Timer};
+use panic_probe as _;
 use reqwless::client::HttpClient;
 // Uncomment these for TLS requests:
 // use reqwless::client::{HttpClient, TlsConfig, TlsVerify};
@@ -26,11 +28,10 @@ use reqwless::request::Method;
 use serde::Deserialize;
 use serde_json_core::from_slice;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
-    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
+    DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>, dma::InterruptHandler<DMA_CH1>;
 });
 
 const WIFI_NETWORK: &str = "ssid"; // change to your network SSID
@@ -44,11 +45,11 @@ async fn cyw43_task(
 }
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, cyw43::NetDriver<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(spawner: Spawner) {
     info!("Hello World!");
 
@@ -77,6 +78,7 @@ async fn main(spawner: Spawner) {
         p.PIN_24,
         p.PIN_29,
         dma::Channel::new(p.DMA_CH0, Irqs),
+        dma::Channel::new(p.DMA_CH1, Irqs),
     );
 
     static STATE: StaticCell<cyw43::State> = StaticCell::new();
@@ -89,20 +91,17 @@ async fn main(spawner: Spawner) {
         .set_power_management(cyw43::PowerManagementMode::PowerSave)
         .await;
 
-    let config = Config::dhcpv4(Default::default());
-    // Use static IP configuration instead of DHCP
-    //let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-    //    address: Ipv4Cidr::new(Ipv4Address::new(192, 168, 69, 2), 24),
-    //    dns_servers: Vec::new(),
-    //    gateway: Some(Ipv4Address::new(192, 168, 69, 1)),
-    //});
-
     // Generate random seed
     let seed = rng.next_u64();
 
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<5>> = StaticCell::new();
-    let (stack, runner) = embassy_net::new(net_device, config, RESOURCES.init(StackResources::new()), seed);
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
+    let (stack, runner) = embassy_net::Stack::new(STACK.init(StackStorage::new()), seed);
+
+    // Add the network interface to the stack.
+    static DEVICE: StaticCell<cyw43::NetDriver<'static>> = StaticCell::new();
+    let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(net_device)));
+    unwrap!(iface.set_dhcpv4(Some(Default::default())));
 
     spawner.spawn(unwrap!(net_task(runner)));
 
@@ -114,10 +113,10 @@ async fn main(spawner: Spawner) {
     }
 
     info!("waiting for link...");
-    stack.wait_link_up().await;
+    iface.wait_link_up().await;
 
     info!("waiting for DHCP...");
-    stack.wait_config_up().await;
+    iface.wait_config_up().await;
 
     // And now we can use it!
     info!("Stack is up!");
@@ -130,9 +129,10 @@ async fn main(spawner: Spawner) {
         // let mut tls_read_buffer = [0; 16640];
         // let mut tls_write_buffer = [0; 16640];
 
-        let client_state = TcpClientState::<1, 4096, 4096>::new();
-        let tcp_client = TcpClient::new(stack, &client_state);
-        let dns_client = DnsSocket::new(stack);
+        static CLIENT_STATE: StaticCell<TcpClientState<1, 4096, 4096>> = StaticCell::new();
+        let client_state = CLIENT_STATE.init(TcpClientState::new());
+        let tcp_client = TcpClient::new(stack, client_state);
+        let dns_client = DnsClient::new(stack);
         // Uncomment these for TLS requests:
         // let tls_config = TlsConfig::new(seed, &mut tls_read_buffer, &mut tls_write_buffer, TlsVerify::None);
 

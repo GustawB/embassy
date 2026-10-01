@@ -1,17 +1,14 @@
-#[cfg(not(stm32n6))]
 use core::sync::atomic::{Ordering, compiler_fence};
 
-#[cfg(not(stm32n6))]
 use crate::pac::common::{RW, Reg};
-#[cfg(backup_sram)]
+// For the H7, the Retention features live in the pwr registers
+#[cfg(all(backup_sram, not(stm32h7)))]
+use crate::pac::pwr::vals::Retention;
+#[cfg(all(stm32h7, backup_sram))]
 use crate::pac::pwr::vals::Retention;
 pub use crate::pac::rcc::vals::Rtcsel as RtcClockSource;
+use crate::rcc::LSI_FREQ;
 use crate::time::Hertz;
-
-#[cfg(any(stm32f0, stm32f1, stm32f3))]
-pub const LSI_FREQ: Hertz = Hertz(40_000);
-#[cfg(not(any(stm32f0, stm32f1, stm32f3)))]
-pub const LSI_FREQ: Hertz = Hertz(32_000);
 
 #[allow(dead_code)]
 #[derive(Clone, Copy)]
@@ -25,7 +22,7 @@ pub struct LseConfig {
     pub frequency: Hertz,
     pub mode: LseMode,
     /// If peripherals other than RTC/TAMP or RCC functions need the lse this bit must be set
-    #[cfg(any(rcc_l5, rcc_u5, rcc_u3, rcc_wle, rcc_wl5, rcc_wba))]
+    #[cfg(any(rcc_l5, rcc_u5, rcc_u3, rcc_wle, rcc_wl5, rcc_wba, rcc_u0))]
     pub peripherals_clocked: bool,
 }
 
@@ -56,7 +53,7 @@ impl From<LseDrive> for crate::pac::rcc::vals::Lsedrv {
     }
 }
 
-#[cfg(not(any(rtc_v2_l0, rtc_v2_l1, stm32c0, stm32n6)))]
+#[cfg(not(any(rtc_v2_l0, rtc_v2_l1, stm32c0)))]
 type Bdcr = crate::pac::rcc::regs::Bdcr;
 #[cfg(any(rtc_v2_l0, rtc_v2_l1))]
 type Bdcr = crate::pac::rcc::regs::Csr;
@@ -66,7 +63,7 @@ type Bdcr = crate::pac::rcc::regs::Csr1;
 #[cfg(any(stm32c0))]
 fn unlock() {}
 
-#[cfg(not(any(stm32c0, stm32n6)))]
+#[cfg(not(any(stm32c0)))]
 fn unlock() {
     #[cfg(any(stm32f0, stm32f1, stm32f2, stm32f3, stm32l0, stm32l1))]
     let cr = crate::pac::PWR.cr();
@@ -81,7 +78,6 @@ fn unlock() {
     while !cr.read().dbp() {}
 }
 
-#[cfg(not(stm32n6))]
 fn bdcr() -> Reg<Bdcr, RW> {
     #[cfg(any(rtc_v2_l0, rtc_v2_l1))]
     return crate::pac::RCC.csr();
@@ -118,7 +114,7 @@ impl LsConfig {
             lse: Some(LseConfig {
                 frequency: Hertz(32_768),
                 mode: LseMode::Oscillator(LseDrive::MediumHigh),
-                #[cfg(any(rcc_l5, rcc_u5, rcc_u3, rcc_wle, rcc_wl5, rcc_wba))]
+                #[cfg(any(rcc_l5, rcc_u5, rcc_u3, rcc_wle, rcc_wl5, rcc_wba, rcc_u0))]
                 peripherals_clocked: false,
             }),
             lsi: false,
@@ -155,7 +151,6 @@ impl Default for LsConfig {
 }
 
 impl LsConfig {
-    #[cfg(not(stm32n6))]
     pub(crate) fn init(&self) -> Option<Hertz> {
         let rtc_clk = match self.rtc {
             RtcClockSource::Lsi => {
@@ -174,14 +169,12 @@ impl LsConfig {
             },
             None => (false, false, None),
         };
-        #[cfg(any(rcc_l5, rcc_u5, rcc_wle, rcc_wl5, rcc_wba))]
+        #[cfg(any(rcc_l5, rcc_u5, rcc_wle, rcc_wl5, rcc_wba, rcc_u0))]
         let lse_sysen = if let Some(lse) = self.lse {
             Some(lse.peripherals_clocked)
         } else {
             None
         };
-        #[cfg(rcc_u0)]
-        let lse_sysen = Some(lse_en);
 
         _ = lse_drv; // not all chips have it.
 
@@ -217,8 +210,32 @@ impl LsConfig {
         // Enable backup regulator for peristent battery backed sram
         #[cfg(backup_sram)]
         {
-            unsafe { super::BKSRAM_RETAINED = crate::pac::PWR.bdcr().read().bren() == Retention::Preserved };
+            #[cfg(stm32h7)]
+            unsafe {
+                super::BKSRAM_RETAINED = crate::pac::PWR.cr2().read().bren() == Retention::Preserved
+            };
+            #[cfg(not(stm32h7))]
+            unsafe {
+                super::BKSRAM_RETAINED = crate::pac::PWR.bdcr().read().bren() == Retention::Preserved
+            };
 
+            // H7 has an additional backup SRAM enable bit that must be set in the RCC registers
+            #[cfg(stm32h7)]
+            crate::pac::RCC.ahb4enr().modify(|w| {
+                w.set_bkpsramen(true);
+            });
+
+            #[cfg(stm32h7)]
+            assert!(crate::pac::PWR.cr1().read().dbp() == true);
+
+            #[cfg(stm32h7)]
+            crate::pac::PWR.cr2().modify(|w| {
+                w.set_bren(match self.enable_backup_sram {
+                    true => Retention::Preserved,
+                    false => Retention::Lost,
+                });
+            });
+            #[cfg(not(stm32h7))]
             crate::pac::PWR.bdcr().modify(|w| {
                 w.set_bren(match self.enable_backup_sram {
                     true => Retention::Preserved,
@@ -227,6 +244,9 @@ impl LsConfig {
             });
 
             // Wait for backup regulator voltage to stabilize
+            #[cfg(stm32h7)]
+            while self.enable_backup_sram && !crate::pac::PWR.cr2().read().brrdy() {}
+            #[cfg(not(stm32h7))]
             while self.enable_backup_sram && !crate::pac::PWR.bdsr().read().brrdy() {}
         }
 
@@ -262,7 +282,7 @@ impl LsConfig {
         }
         #[cfg(rcc_n6)]
         {
-            ok &= apb4lenr.rtcen() == (self.rtc != RtcClockSource::DISABLE);
+            ok &= apb4lenr.rtcen() == (self.rtc != RtcClockSource::Disable);
         }
         ok &= reg.lseon() == lse_en;
         #[cfg(not(rcc_n6))]
@@ -309,7 +329,7 @@ impl LsConfig {
         }
 
         // If not OK, reset backup domain and configure it.
-        #[cfg(not(any(rcc_l0, rcc_l0_v2, rcc_l1, stm32h5, stm32h7rs, stm32c0, stm32n6)))]
+        #[cfg(not(any(rcc_l0, rcc_l0_v2, rcc_l1, stm32h5, stm32h7rs, stm32c0, stm32n6, stm32u5)))]
         {
             bdcr().modify(|w| w.set_bdrst(true));
             bdcr().modify(|w| w.set_bdrst(false));
@@ -321,6 +341,9 @@ impl LsConfig {
         // letting half our RAM go magically *poof*.
         // STM32H503CB/EB/KB/RB device errata - 2.2.8 SRAM2 unduly erased upon a backup domain reset
         // STM32H562xx/563xx/573xx device errata - 2.2.14 SRAM2 is erased when the backup domain is reset
+        // The U5 does the same: SRAM2 is one of the "device secrets" a backup domain reset wipes
+        // (RM0456, tamper and backup registers), observed on an STM32U585 where the erase zeroed
+        // the 64 kB of SRAM2 during `init`.
         //#[cfg(any(stm32h5, stm32h7rs))]
         #[cfg(any(stm32h7rs, stm32n6))]
         {

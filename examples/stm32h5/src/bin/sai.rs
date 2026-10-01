@@ -2,13 +2,14 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::sai::{
     BitOrder, ClockStrobe, DataSize, FrameSyncOffset, FrameSyncPolarity, MasterClockDivider, Sai, word,
 };
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{Config, bind_interrupts, dma, peripherals, sai};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     GPDMA1_CHANNEL1 => dma::InterruptHandler<peripherals::GPDMA1_CH1>;
@@ -67,8 +68,8 @@ async fn main(_spawner: Spawner) {
         p.PE4, // FS_A — LRCLK
         p.PE2, // MCLK_A — master clock
         p.GPDMA1_CH1,
-        &mut write_buffer,
         Irqs,
+        &mut write_buffer,
         sai_config,
     );
 

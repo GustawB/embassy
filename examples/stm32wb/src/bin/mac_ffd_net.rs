@@ -4,21 +4,24 @@
 use core::net::Ipv6Addr;
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::udp::{PacketMetadata, UdpSocket};
-use embassy_net::{Ipv6Cidr, StackResources, StaticConfigV6};
+use embassy_net::StackStorage;
+use embassy_net::udp::UdpSocket;
+use embassy_net::wire::{IpCidr, Ipv6Cidr, ListenSocketAddr};
 use embassy_stm32::bind_interrupts;
 use embassy_stm32::ipcc::{Config, ReceiveInterruptHandler, TransmitInterruptHandler};
 use embassy_stm32::peripherals::RNG;
-use embassy_stm32::rcc::WPAN_DEFAULT;
+use embassy_stm32::rcc::Config as RccConfig;
 use embassy_stm32::rng::InterruptHandler as RngInterruptHandler;
 use embassy_stm32_wpan::TlMbox;
-use embassy_stm32_wpan::mac::{Driver, DriverState, Runner};
+use embassy_stm32_wpan::net::runner::Runner;
+use embassy_stm32_wpan::net::{Device, State};
+use embassy_stm32_wpan::sub::mac::ControllerAdapter;
 use embassy_stm32_wpan::sub::mm;
 use embassy_time::{Duration, Timer};
-use heapless::Vec;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs{
     IPCC_C1_RX => ReceiveInterruptHandler;
@@ -32,12 +35,12 @@ async fn run_mm_queue(mut memory_manager: mm::MemoryManager<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn run_mac(runner: &'static Runner<'static>) -> ! {
+async fn run_mac(mut runner: Runner<'static, ControllerAdapter<'static>>) -> ! {
     runner.run().await
 }
 
 #[embassy_executor::task]
-async fn run_net(mut runner: embassy_net::Runner<'static, Driver<'static>>) -> ! {
+async fn run_net(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
@@ -67,27 +70,30 @@ async fn main(spawner: Spawner) {
     */
 
     let mut config = embassy_stm32::Config::default();
-    config.rcc = WPAN_DEFAULT;
+    config.rcc = RccConfig::new_wpan();
     let p = embassy_stm32::init(config);
     info!("Hello World!");
 
     let config = Config::default();
-    let mut mbox = TlMbox::init(p.IPCC, Irqs, config).await.unwrap();
+    let (mac, mm) = TlMbox::wait_ready(p.IPCC, Irqs, config)
+        .await
+        .unwrap()
+        .init_mac()
+        .await
+        .unwrap();
 
-    spawner.spawn(run_mm_queue(mbox.mm_subsystem).unwrap());
+    spawner.spawn(run_mm_queue(mm).unwrap());
 
-    let result = mbox.sys_subsystem.shci_c2_mac_802_15_4_init().await;
-    info!("initialized mac: {}", result);
+    static DRIVER_STATE: StaticCell<State<ControllerAdapter>> = StaticCell::new();
+    static CONTROLLER: StaticCell<ControllerAdapter> = StaticCell::new();
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
 
-    static DRIVER_STATE: StaticCell<DriverState> = StaticCell::new();
-    static RUNNER: StaticCell<Runner> = StaticCell::new();
-    static RESOURCES: StaticCell<StackResources<3>> = StaticCell::new();
+    let driver_state = DRIVER_STATE.init(State::new());
+    let controller = CONTROLLER.init(ControllerAdapter::new(mac));
 
-    let driver_state = DRIVER_STATE.init(DriverState::new(mbox.mac_subsystem));
-
-    let (driver, mac_runner, mut control) = Driver::new(
+    let (driver, mut control, mac_runner) = embassy_stm32_wpan::net::new(
         driver_state,
-        0x1122u16.to_be_bytes().try_into().unwrap(),
+        controller,
         0xACDE480000000001u64.to_be_bytes().try_into().unwrap(),
     );
 
@@ -95,7 +101,7 @@ async fn main(spawner: Spawner) {
     // Generate random seed.
     // let mut rng = Rng::new(p.RNG, Irqs);
     let seed = [0; 8];
-    // let _ = rng.async_fill_bytes(&mut seed).await;
+    // let _ = rng.fill_bytes(&mut seed).await;
     let seed = u64::from_le_bytes(seed);
 
     info!("seed generated");
@@ -103,43 +109,42 @@ async fn main(spawner: Spawner) {
     // Init network stack
     let ipv6_addr = Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2ff);
 
-    let config = embassy_net::Config::ipv6_static(StaticConfigV6 {
-        address: Ipv6Cidr::new(ipv6_addr, 104),
-        gateway: None,
-        dns_servers: Vec::new(),
-    });
+    let (stack, eth_runner) = embassy_net::Stack::new(STACK.init(StackStorage::new()), seed);
 
-    let (stack, eth_runner) = embassy_net::new(driver, config, RESOURCES.init(StackResources::new()), seed);
+    // Add the network interface to the stack.
+    static DEVICE: StaticCell<Device<'static>> = StaticCell::new();
+    let iface = unwrap!(stack.add_iface_borrowed(DEVICE.init(driver)));
+    unwrap!(iface.add_ip_addr(IpCidr::V6(Ipv6Cidr::new(ipv6_addr, 104))));
 
     // wpan runner
-    spawner.spawn(run_mac(RUNNER.init(mac_runner)).unwrap());
+    spawner.spawn(unwrap!(run_mac(mac_runner)));
 
     // Launch network task
     spawner.spawn(unwrap!(run_net(eth_runner)));
 
     info!("Network task initialized");
 
-    control.init_link([0x1A, 0xAA]).await;
+    unwrap!(
+        control
+            .start_ap([0x1A, 0xAA], 0x1122u16.to_be_bytes().try_into().unwrap())
+            .await
+    );
 
     // Ensure DHCP configuration is up before trying connect
-    stack.wait_config_up().await;
+    iface.wait_config_up().await;
 
     info!("Network up");
 
     // Then we can use it!
-    let mut rx_meta = [PacketMetadata::EMPTY];
-    let mut rx_buffer = [0; 4096];
-    let mut tx_meta = [PacketMetadata::EMPTY];
-    let mut tx_buffer = [0; 4096];
 
-    let mut socket = UdpSocket::new(stack, &mut rx_meta, &mut rx_buffer, &mut tx_meta, &mut tx_buffer);
+    let mut socket = unwrap!(UdpSocket::new(stack));
 
-    let remote_endpoint = (Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2fb), 8000);
+    let remote_addr = (Ipv6Addr::new(0, 0, 0, 0, 0, 0xffff, 0xc00a, 0x2fb), 8000);
 
     let send_buf = [0u8; 20];
 
-    socket.bind((ipv6_addr, 8000)).unwrap();
-    socket.send_to(&send_buf, remote_endpoint).await.unwrap();
+    socket.bind((ipv6_addr, 8000), ListenSocketAddr::UNSPECIFIED).unwrap();
+    socket.send_to(&send_buf, remote_addr).await.unwrap();
 
     Timer::after(Duration::from_secs(2)).await;
 

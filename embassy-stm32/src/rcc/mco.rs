@@ -1,6 +1,8 @@
 use embassy_hal_internal::PeripheralType;
 
+use crate::Peri;
 use crate::gpio::{AfType, Flex, OutputType, Speed};
+#[cfg(not(stm32c5))]
 use crate::pac::RCC;
 #[cfg(any(
     rcc_f2,
@@ -11,6 +13,7 @@ use crate::pac::RCC;
     rcc_h5,
     rcc_h7ab,
     rcc_h7rm0433,
+    rcc_h7rm0468,
     rcc_h7,
     rcc_h7rs,
     rcc_n6
@@ -25,6 +28,7 @@ pub use crate::pac::rcc::vals::Mco1sel as Mco1Source;
     rcc_h5,
     rcc_h7ab,
     rcc_h7rm0433,
+    rcc_h7rm0468,
     rcc_h7,
     rcc_h7rs,
     rcc_n6,
@@ -42,12 +46,14 @@ pub use crate::pac::rcc::vals::Mcopre as McoPrescaler;
     rcc_h5,
     rcc_h7ab,
     rcc_h7rm0433,
+    rcc_h7rm0468,
     rcc_h7,
     rcc_h7rs,
     rcc_n6
 )))]
 pub use crate::pac::rcc::vals::Mcosel as McoSource;
-use crate::{Peri, peripherals};
+#[cfg(not(stm32c5))]
+use crate::peripherals;
 
 #[cfg(any(stm32f1, rcc_f0v1, rcc_f3v1, rcc_f37))]
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd)]
@@ -67,6 +73,7 @@ pub trait McoInstance: PeripheralType + SealedMcoInstance + 'static {
 
 pin_trait!(McoPin, McoInstance);
 
+#[cfg(not(stm32c5))]
 macro_rules! impl_peri {
     ($peri:ident, $source:ident, $set_source:ident, $set_prescaler:ident) => {
         impl SealedMcoInstance for peripherals::$peri {}
@@ -97,9 +104,9 @@ use self::{McoSource as Mco1Source, McoSource as Mco2Source};
 
 #[cfg(mco)]
 impl_peri!(MCO, McoSource, set_mcosel, set_mcopre);
-#[cfg(mco1)]
+#[cfg(all(mco1, not(stm32c5)))]
 impl_peri!(MCO1, Mco1Source, set_mco1sel, set_mco1pre);
-#[cfg(mco2)]
+#[cfg(all(mco2, not(stm32c5)))]
 impl_peri!(MCO2, Mco2Source, set_mco2sel, set_mco2pre);
 
 pub struct Mco<'d, T: McoInstance> {

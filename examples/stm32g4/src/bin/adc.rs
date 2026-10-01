@@ -2,11 +2,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::Config;
-use embassy_stm32::adc::{Adc, SampleTime};
+use embassy_stm32::adc::{Adc, AdcChannel, SampleTime};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -28,14 +29,14 @@ async fn main(_spawner: Spawner) {
     let mut p = embassy_stm32::init(config);
     info!("Hello World!");
 
-    let mut adc = Adc::new(p.ADC2, Default::default());
+    let mut adc = Adc::new_blocking(p.ADC2, Default::default());
 
-    let mut adc_temp = Adc::new(p.ADC1, Default::default());
+    let mut adc_temp = Adc::new_blocking(p.ADC1, Default::default());
     let mut temperature = adc_temp.enable_temperature();
 
     loop {
-        let measured = adc.blocking_read(&mut p.PA7, SampleTime::Cycles245);
-        let temperature = adc_temp.blocking_read(&mut temperature, SampleTime::Cycles245);
+        let measured = adc.blocking_read(p.PA7.reborrow_adc(), SampleTime::Cycles245);
+        let temperature = adc_temp.blocking_read(temperature.reborrow_adc(), SampleTime::Cycles245);
         info!("measured: {}", measured);
         info!("temperature: {}", temperature);
         Timer::after_millis(500).await;

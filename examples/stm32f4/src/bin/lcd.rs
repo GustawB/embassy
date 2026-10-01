@@ -6,6 +6,7 @@
 #![no_main]
 
 use defmt::{error, info};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::dma2d::{self, Buffer2D, Dma2d};
 use embassy_stm32::gpio::{Level, Output, Speed};
@@ -16,8 +17,8 @@ use embassy_stm32::spi::{self};
 use embassy_stm32::time::Hertz;
 use embassy_stm32::{Config, bind_interrupts, peripherals};
 use embassy_time::Timer;
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(
     struct Irqs {
@@ -106,8 +107,8 @@ async fn main(_spawner: Spawner) {
     let r7 = p.PG6;
 
     let mut ltdc = Ltdc::<_, ltdc::Rgb666>::new_with_pins(
-        p.LTDC, Irqs, p.PG7, p.PC6, p.PA4, p.PF10, b2, b3, b4, b5, b6, b7, g2, g3, g4, g5, g6, g7, r2, r3, r4, r5, r6,
-        r7,
+        p.LTDC, p.PG7, p.PC6, p.PA4, p.PF10, b2, b3, b4, b5, b6, b7, g2, g3, g4, g5, g6, g7, r2, r3, r4, r5, r6, r7,
+        Irqs,
     );
 
     info!("LTDC Init");

@@ -240,7 +240,7 @@ fn generate_code(cfgs: &mut common::CfgSet, singletons: &[Singleton]) {
 }
 
 fn interrupts() -> TokenStream {
-    let interrupts = METADATA.interrupts.iter().map(|interrupt| format_ident!("{interrupt}"));
+    let interrupts = METADATA.interrupts.iter().map(|(name, _)| format_ident!("{name}"));
 
     quote! {
         embassy_hal_internal::interrupt_mod!(#(#interrupts),*);
@@ -265,6 +265,26 @@ fn peripherals(singletons: &[Singleton]) -> TokenStream {
     quote! {
         embassy_hal_internal::peripherals_definition!(#(#defs),*);
         embassy_hal_internal::peripherals_struct!(#(#peripherals),*);
+    }
+}
+
+fn impl_adc(impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
+    for signal in peripheral.signals.iter() {
+        let (ch_num, ch_side) = signal.name.rsplit_once("_").unwrap();
+        let ch_num = ch_num.strip_prefix("CH").unwrap().parse::<u8>().unwrap();
+        let ch_side = match ch_side {
+            "A" => format_ident!("SideA"),
+            "B" => format_ident!("SideB"),
+            side => panic!("Invalid ADC channel side: {}", side),
+        };
+
+        assert_eq!(signal.pins.len(), 1);
+        let pin = format_ident!("{}", signal.pins[0].pin);
+        let ch_num = Literal::u8_unsuffixed(ch_num);
+
+        impls.push(quote! {
+            impl_adc_pin!(#pin, #ch_num, crate::adc::ChannelSide::#ch_side);
+        })
     }
 }
 
@@ -293,6 +313,44 @@ fn impl_dma_channel(impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
         impls.push(quote! {
             impl_dma_channel!(#instance, #channel_name, #channel_number);
         });
+    }
+}
+
+fn impl_i2c(cfgs: &mut common::CfgSet, impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
+    cfgs.declare_all(&["has_i2c_sda_pins", "has_i2c_scl_pins"]);
+
+    let instance = Ident::new(peripheral.name, Span::call_site());
+    let flexcomm = Ident::new(
+        peripheral.flexcomm.expect("LPC55 must specify FLEXCOMM instance"),
+        Span::call_site(),
+    );
+    let number = Literal::u8_unsuffixed(peripheral.name.strip_prefix("I2C").unwrap().parse::<u8>().unwrap());
+
+    impls.push(quote! {
+        impl_i2c_instance!(#instance, #flexcomm, #number);
+    });
+
+    for signal in peripheral.signals {
+        let r#macro = match signal.name {
+            "SCL" => {
+                cfgs.enable("has_i2c_scl_pins");
+                format_ident!("impl_i2c_scl_pin")
+            }
+            "SDA" => {
+                cfgs.enable("has_i2c_sda_pins");
+                format_ident!("impl_i2c_sda_pin")
+            }
+            _ => unreachable!(),
+        };
+
+        for pin in signal.pins {
+            let alt = format_ident!("Alt{}", pin.alt);
+            let pin = format_ident!("{}", pin.pin);
+
+            impls.push(quote! {
+                #r#macro!(#pin, #instance, #alt);
+            });
+        }
     }
 }
 
@@ -342,7 +400,7 @@ fn impl_usart(cfgs: &mut common::CfgSet, impls: &mut Vec<TokenStream>, periphera
         };
 
         for pin in signal.pins {
-            let alt = format_ident!("ALT{}", pin.alt);
+            let alt = format_ident!("Alt{}", pin.alt);
             let pin = format_ident!("{}", pin.pin);
 
             impls.push(quote! {
@@ -388,7 +446,7 @@ fn impl_sct(impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
             if signal.name.starts_with("OUT") {
                 for pin in signal.pins {
                     let pin_name = format_ident!("{}", pin.pin);
-                    let alt = format_ident!("ALT{}", pin.alt);
+                    let alt = format_ident!("Alt{}", pin.alt);
 
                     impls.push(quote! {
                         impl_sct_output_pin!(#instance, #channel_name, #pin_name, #alt);
@@ -399,10 +457,56 @@ fn impl_sct(impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
     }
 }
 
+fn impl_spi(cfgs: &mut common::CfgSet, impls: &mut Vec<TokenStream>, peripheral: &Peripheral) {
+    cfgs.declare_all(&["has_spi_sck_pins", "has_spi_mosi_pins", "has_spi_miso_pins"]);
+
+    let instance = Ident::new(peripheral.name, Span::call_site());
+    let flexcomm = Ident::new(
+        peripheral.flexcomm.expect("LPC55 must specify FLEXCOMM instance"),
+        Span::call_site(),
+    );
+    let number = Literal::u8_unsuffixed(peripheral.name.strip_prefix("SPI").unwrap().parse::<u8>().unwrap());
+
+    impls.push(quote! {
+        impl_spi_instance!(#instance, #flexcomm, #number);
+    });
+
+    for signal in peripheral.signals {
+        let r#macro = match signal.name {
+            "SCK" => {
+                cfgs.enable("has_spi_sck_pins");
+                format_ident!("impl_spi_sck_pin")
+            }
+            "MOSI" => {
+                cfgs.enable("has_spi_mosi_pins");
+                format_ident!("impl_spi_mosi_pin")
+            }
+            "MISO" => {
+                cfgs.enable("has_spi_miso_pins");
+                format_ident!("impl_spi_miso_pin")
+            }
+            _ => unreachable!(),
+        };
+
+        for pin in signal.pins {
+            let alt = format_ident!("Alt{}", pin.alt);
+            let pin = format_ident!("{}", pin.pin);
+
+            impls.push(quote! {
+                #r#macro!(#pin, #instance, #alt);
+            });
+        }
+    }
+}
+
 fn impl_peripherals(cfgs: &mut common::CfgSet, _singletons: &[Singleton]) -> TokenStream {
     let mut impls = Vec::new();
 
     for peripheral in metadata::METADATA.peripherals.iter() {
+        if peripheral.name.starts_with("ADC") {
+            impl_adc(&mut impls, peripheral);
+        }
+
         if peripheral.name.starts_with("GPIO") {
             impl_gpio_pin(&mut impls, peripheral);
         }
@@ -411,8 +515,16 @@ fn impl_peripherals(cfgs: &mut common::CfgSet, _singletons: &[Singleton]) -> Tok
             impl_dma_channel(&mut impls, peripheral);
         }
 
+        if peripheral.name.starts_with("I2C") {
+            impl_i2c(cfgs, &mut impls, peripheral);
+        }
+
         if peripheral.name.starts_with("USART") {
             impl_usart(cfgs, &mut impls, peripheral);
+        }
+
+        if peripheral.name.starts_with("SPI") {
+            impl_spi(cfgs, &mut impls, peripheral);
         }
 
         if peripheral.name.starts_with("SCT") {

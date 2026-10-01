@@ -9,6 +9,14 @@ impl super::Rtc {
     /// Applies the RTC config
     /// It this changes the RTC clock source the time will be reset
     pub(super) fn configure(&mut self, async_psc: u8, sync_psc: u16) {
+        let prer = RTC::regs().prer().read();
+        if prer.prediv_s() == sync_psc
+            && prer.prediv_a() == async_psc
+            && RTC::regs().cr().read().fmt() == Fmt::TwentyFourHour
+            && RTC::regs().icsr().read().inits()
+        {
+            return;
+        }
         self.write(true, |rtc| {
             rtc.cr().modify(|w| {
                 w.set_bypshad(true);
@@ -89,7 +97,7 @@ impl super::Rtc {
                     // the absolute offset is masked, i.e. for the minimum
                     // offset (-511), 511 pulses are masked.
                     w.set_calp(Calp::NoChange);
-                    w.set_calm((clock_drift * -1.0) as u16);
+                    w.set_calm(-clock_drift as u16);
                 }
             });
         })
@@ -154,6 +162,10 @@ impl SealedInstance for crate::peripherals::RTC {
             type WakeupInterrupt = crate::interrupt::typelevel::RTC;
         }
     );
+
+    fn shpf() -> bool {
+        Self::regs().icsr().read().shpf()
+    }
 
     fn read_backup_register(_rtc: Rtc, register: usize) -> Option<u32> {
         #[allow(clippy::if_same_then_else)]

@@ -9,12 +9,13 @@ use core::f32::consts::PI;
 
 use common::*;
 use defmt::assert;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::adc::{Adc, SampleTime};
-use embassy_stm32::dac::{DacChannel, Value};
+use embassy_stm32::dac::DacChannel;
 use embassy_time::Timer;
 use micromath::F32Ext;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[cfg_attr(
     feature = "stop",
@@ -25,18 +26,14 @@ async fn main(_spawner: Spawner) {
     // Initialize the board and obtain a Peripherals instance
     let p: embassy_stm32::Peripherals = init();
 
-    let adc = peri!(p, ADC);
+    let adc = peri!(p, DAC_ADC);
     let dac = peri!(p, DAC);
     let dac_pin = peri!(p, DAC_PIN);
     let mut adc_pin = unsafe { core::ptr::read(&dac_pin) };
 
     let mut dac = DacChannel::new_blocking(dac, dac_pin);
 
-    #[cfg(not(feature = "stm32g491re"))]
-    let mut adc = Adc::new(adc);
-
-    #[cfg(feature = "stm32g491re")]
-    let mut adc = Adc::new(adc, Default::default());
+    let mut adc = Adc::new_blocking(adc, Default::default());
 
     #[cfg(feature = "stm32h755zi")]
     let normalization_factor = 256;
@@ -48,7 +45,7 @@ async fn main(_spawner: Spawner) {
     ))]
     let normalization_factor: i32 = 16;
 
-    dac.set(Value::Bit8(0));
+    dac.set(0);
     // Now wait a little to obtain a stable value
     Timer::after_millis(30).await;
     let offset = adc.blocking_read(&mut adc_pin, SampleTime::from_bits(0));
@@ -56,7 +53,7 @@ async fn main(_spawner: Spawner) {
     for v in 0..=255 {
         // First set the DAC output value
         let dac_output_val = to_sine_wave(v);
-        dac.set(Value::Bit8(dac_output_val));
+        dac.set(dac_output_val);
 
         // Now wait a little to obtain a stable value
         Timer::after_millis(30).await;

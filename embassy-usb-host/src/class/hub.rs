@@ -2,27 +2,40 @@
 #![allow(missing_docs)]
 //!
 //! Handles the deferred bus reset and port state/speed detection required for hub enumeration.
-//! Requires the USB driver to support Interrupt IN channels.
+//! Requires the USB driver to support Interrupt IN pipes.
 
 use core::num::NonZeroU8;
+use core::ops::Deref;
 
 use bitflags::bitflags;
 use embassy_time::Timer;
-use embassy_usb_driver::host::{HostError, RequestType, SetupPacket, UsbChannel, UsbHostDriver, channel};
+use embassy_usb::control::Request;
+use embassy_usb_driver::host::{HostError, SplitInfo, SplitSpeed, UsbHostAllocator, UsbPipe, pipe};
 use embassy_usb_driver::{Direction, EndpointInfo, EndpointType, Speed};
-use zerocopy::{FromBytes, Immutable, IntoBytes, KnownLayout};
 
-use crate::control::{CLEAR_FEATURE, ControlChannelExt, GET_STATUS, SET_FEATURE};
-use crate::descriptor::{DEFAULT_MAX_DESCRIPTOR_SIZE, InterfaceDescriptor, USBDescriptor};
-use crate::handler::{EnumerationInfo, HandlerEvent, RegisterError};
+use crate::control::{ControlPipeExt, ControlType, Recipient, RequestType, SetupPacket};
+use crate::descriptor::{
+    DEFAULT_MAX_DESCRIPTOR_SIZE, DescriptorError, InterfaceDescriptor, USBDescriptor, VariableSizeDescriptor,
+    WritableDescriptor,
+};
+use crate::handler::{BusRoute, EnumerationInfo, HandlerEvent, RegisterError};
+use crate::{BusHandle, EnumerationError};
 
-pub struct HubHandler<H: UsbHostDriver, const MAX_PORTS: usize> {
-    interrupt_channel: H::Channel<channel::Interrupt, channel::In>,
-    control_channel: H::Channel<channel::Control, channel::InOut>,
+/// How many times a port is polled for `ENABLED` after a reset before
+/// enumeration gives up waiting and proceeds with the speed it has.
+const PORT_ENABLE_POLLS: u32 = 10;
+
+/// Milliseconds between those polls.
+const PORT_ENABLE_POLL_MS: u64 = 10;
+
+pub struct HubHandler<'d, A: UsbHostAllocator<'d>, const MAX_PORTS: usize> {
+    bus: BusHandle<'d, A>,
+    interrupt_channel: A::Pipe<pipe::Interrupt, pipe::In>,
+    control_channel: A::Pipe<pipe::Control, pipe::InOut>,
     desc: HubDescriptor,
     device_address: u8,
     device_lut: [Option<NonZeroU8>; MAX_PORTS],
-    speed: Speed,
+    route: BusRoute,
 }
 
 #[derive(Debug)]
@@ -32,10 +45,11 @@ pub enum HubEvent {
     DeviceRemoved { address: Option<NonZeroU8>, port: u8 },
 }
 
-impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
+impl<'d, A: UsbHostAllocator<'d>, const MAX_PORTS: usize> HubHandler<'d, A, MAX_PORTS> {
     /// Attempt to register a hub handler for the given device.
-    pub async fn try_register(bus: &H, enum_info: &EnumerationInfo) -> Result<Self, RegisterError> {
-        let mut control_channel = bus.alloc_channel::<channel::Control, channel::InOut>(
+    pub async fn try_register(bus: &BusHandle<'d, A>, enum_info: &EnumerationInfo) -> Result<Self, RegisterError> {
+        let ls_over_fs = matches!(enum_info.split(), Some(s) if s.device_speed() == SplitSpeed::Low);
+        let mut control_channel = bus.alloc_pipe::<pipe::Control, pipe::InOut>(
             enum_info.device_address,
             &EndpointInfo {
                 addr: 0.into(),
@@ -43,10 +57,10 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
                 max_packet_size: enum_info
                     .device_desc
                     .max_packet_size0
-                    .min(if enum_info.ls_over_fs { 8 } else { 64 }) as u16,
+                    .min(if ls_over_fs { 8 } else { 64 }) as u16,
                 interval_ms: 0,
             },
-            enum_info.ls_over_fs,
+            enum_info.split(),
         )?;
 
         let mut cfg_desc_buf = [0u8; DEFAULT_MAX_DESCRIPTOR_SIZE];
@@ -58,11 +72,25 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
             .iter_interface()
             .find(|v| {
                 matches!(
-                    v,
+                    v.deref(),
                     InterfaceDescriptor {
                         interface_class: 0x09,
                         interface_subclass: 0x0,
-                        interface_protocol: 0x0,
+                        // Match a protocol of either 0x00 or 0x01. Per USB 2.0
+                        // §11.23.1 a full-speed hub and a high-speed hub with a
+                        // single transaction translator both report 0x00 here,
+                        // while a hub with multiple TTs instead exposes two
+                        // alternate settings: 0x01 for single-TT operation on
+                        // alt 0, and 0x02 for multi-TT operation on alt 1. So
+                        // accepting 0x00 alone rejects every multi-TT hub.
+                        //
+                        // 0x02 is deliberately not matched. Alt 0 is the setting
+                        // the hub is already in, as this driver issues no
+                        // SET_INTERFACE, so matching 0x02 would take endpoints
+                        // from a setting the device is not using. Driving a
+                        // multi-TT hub in multi-TT mode, for more full/low-speed
+                        // bandwidth across its ports, would need that request.
+                        interface_protocol: 0x00 | 0x01,
                         ..
                     }
                 )
@@ -74,21 +102,27 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
             .find(|v| v.ep_type() == EndpointType::Interrupt && v.ep_dir() == Direction::In)
             .ok_or(RegisterError::NoSupportedInterface)?;
 
-        let interrupt_channel = bus.alloc_channel::<channel::Interrupt, channel::In>(
+        let interrupt_channel = bus.alloc_pipe::<pipe::Interrupt, pipe::In>(
             enum_info.device_address,
             &interrupt_ep.into(),
-            enum_info.ls_over_fs,
+            enum_info.split(),
         )?;
 
-        let desc = control_channel.request_descriptor::<HubDescriptor, 64>(0, true).await?;
+        let desc = crate::handler::retry_descriptor(async || {
+            control_channel
+                .request_descriptor::<HubDescriptor, { HubDescriptor::BUF_SIZE }>(0, true)
+                .await
+        })
+        .await?;
 
         let mut hub = HubHandler {
+            bus: bus.clone(),
             interrupt_channel,
             control_channel,
             desc,
             device_address: enum_info.device_address,
             device_lut: [None; MAX_PORTS],
-            speed: enum_info.speed,
+            route: enum_info.route,
         };
 
         for port in 0..hub.desc.port_num {
@@ -102,7 +136,8 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
     /// Wait for a hub port status change event.
     pub async fn wait_for_event(&mut self) -> Result<HandlerEvent<HubEvent>, HostError> {
         loop {
-            let mut buf = [0u8; 16];
+            // 1 hub + maximum of 255 ports (USB 2.0 Spec 11.12.3 and 11.23.2.1)
+            let mut buf = [0u8; (1 + 255) / u8::BITS as usize];
             let slice = &mut buf[..(self.desc.port_num as usize / 8) + 1];
             self.interrupt_channel.request_in(slice).await?;
 
@@ -110,11 +145,22 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
             if hub_changes.take_hub_change() {
                 trace!("HUB {}: hub changed, requesting status", self.device_address);
 
-                let (status, change) = self.get_hub_status().await?;
+                let (status, mut change) = self.get_hub_status().await?;
                 debug!(
                     "HUB {}: hub status: {:?} change: {:?}",
                     self.device_address, status, change
                 );
+
+                if change.contains(HubStatusChange::LOCAL_POWER) {
+                    change.toggle(HubStatusChange::LOCAL_POWER);
+                    self.hub_feature(false, HubFeature::ChangeHubLocalPower).await?;
+                }
+
+                if change.contains(HubStatusChange::OVERCURRENT) {
+                    change.toggle(HubStatusChange::OVERCURRENT);
+                    self.hub_feature(false, HubFeature::ChangeHubOverCurrent).await?;
+                    warn!("HUB {}: hub over-current", self.device_address);
+                }
 
                 if !change.is_empty() {
                     return Err(HostError::Other("Unhandled hub status change"));
@@ -132,6 +178,23 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
                 if change.contains(PortStatusChange::RESET) {
                     change.toggle(PortStatusChange::RESET);
                     self.port_feature(false, PortFeature::ChangeReset, port, 0).await?;
+                }
+
+                if change.contains(PortStatusChange::ENABLE) {
+                    change.toggle(PortStatusChange::ENABLE);
+                    self.port_feature(false, PortFeature::ChangeEnable, port, 0).await?;
+                }
+
+                if change.contains(PortStatusChange::SUSPEND) {
+                    change.toggle(PortStatusChange::SUSPEND);
+                    self.port_feature(false, PortFeature::ChangeSuspend, port, 0).await?;
+                }
+
+                if change.contains(PortStatusChange::OVERCURRENT) {
+                    change.toggle(PortStatusChange::OVERCURRENT);
+                    self.port_feature(false, PortFeature::ChangeOverCurrent, port, 0)
+                        .await?;
+                    warn!("HUB {}: over-current on port {}", self.device_address, port);
                 }
 
                 if change.contains(PortStatusChange::CONNECT) {
@@ -164,77 +227,186 @@ impl<H: UsbHostDriver, const MAX_PORTS: usize> HubHandler<H, MAX_PORTS> {
         }
     }
 
-    #[allow(dead_code)]
     async fn hub_feature(&mut self, set: bool, feature: HubFeature) -> Result<(), HostError> {
         let setup = SetupPacket {
-            request_type: RequestType::OUT | RequestType::TYPE_CLASS | RequestType::RECIPIENT_DEVICE,
-            request: if set { SET_FEATURE } else { CLEAR_FEATURE },
+            request_type: RequestType {
+                direction: Direction::Out,
+                control_type: ControlType::Class,
+                recipient: Recipient::Device,
+            },
+            request: if set {
+                Request::SET_FEATURE
+            } else {
+                Request::CLEAR_FEATURE
+            },
             value: feature as u16,
             index: 0,
             length: 0,
         };
-        self.control_channel.control_out(&setup, &[]).await?;
+        self.control_channel.control_out(&setup.to_bytes(), &[]).await?;
         Ok(())
     }
 
     async fn get_hub_status(&mut self) -> Result<(HubStatus, HubStatusChange), HostError> {
         let setup = SetupPacket {
-            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_DEVICE,
-            request: GET_STATUS,
+            request_type: RequestType {
+                direction: Direction::In,
+                control_type: ControlType::Class,
+                recipient: Recipient::Device,
+            },
+            request: Request::GET_STATUS,
             value: 0,
             index: 0,
             length: 4,
         };
-        let mut buf = [0u16; 2];
-        self.control_channel.control_in(&setup, buf.as_mut_bytes()).await?;
+        let mut buf = [0u8; 4];
+        self.control_channel.control_in(&setup.to_bytes(), &mut buf).await?;
         Ok((
-            HubStatus::from_bits_truncate(buf[0]),
-            HubStatusChange::from_bits_truncate(buf[1]),
+            HubStatus::from_bits_truncate(u16::from_le_bytes(buf[..2].try_into().unwrap())),
+            HubStatusChange::from_bits_truncate(u16::from_le_bytes(buf[2..].try_into().unwrap())),
         ))
     }
 
     /// Reset a port and enumerate the device attached to it.
+    ///
+    /// `port` and `speed` are the 0-based port index and device speed as
+    /// reported by [`HubEvent::DeviceDetected`]. Enumeration uses the
+    /// [`BusHandle`] the hub was registered with.
+    ///
+    /// Returns the [`EnumerationInfo`] for the device and bytes written
+    /// to `config_buffer`.
+    ///
+    /// The route included in the [`EnumerationInfo`] is computed per
+    /// USB 2.0 §11.14:
+    ///
+    /// - If this hub is itself reached through a split transaction (e.g. a
+    ///   full-speed hub behind a high-speed hub's Transaction Translator),
+    ///   the child inherits the parent's TT address and port, with the
+    ///   `device_speed` updated to match the attached device. This is
+    ///   correct because the topmost high-speed hub in the chain owns the TT
+    ///   that services the entire subtree below it.
+    /// - Otherwise, if this hub introduces a speed mismatch with the child
+    ///   (HS hub with an LS/FS child, or FS hub with an LS child, where the
+    ///   latter uses the legacy `PRE` prefix on full-speed buses), a new
+    ///   [`SplitInfo`] is constructed pointing at this hub.
+    /// - Otherwise the child is reached directly at its native speed.
     pub async fn enumerate_port(
         &mut self,
+        config_buffer: &mut [u8],
         port: u8,
         speed: Speed,
-        new_device_address: u8,
-    ) -> Result<EnumerationInfo, HostError> {
+    ) -> Result<(EnumerationInfo, usize), EnumerationError> {
         self.port_feature(true, PortFeature::Reset, port, 0).await?;
+        // USB 2.0 §7.1.7.5: TDRSTR ≥ 10 ms. Match the 50 ms margin used in similar drivers.
         Timer::after_millis(50).await;
         self.port_feature(false, PortFeature::ChangeReset, port, 0).await?;
 
-        let ls_pre = matches!((speed, self.speed), (Speed::Low, Speed::Full | Speed::High));
-        self.control_channel
-            .enumerate_device(speed, new_device_address, ls_pre)
-            .await
+        // Re-read the port now that it has been reset, and route on *this*
+        // speed rather than the caller's.
+        //
+        // The speed passed in was sampled when the device was detected,
+        // which is before the reset, and at that point it is not final. A
+        // hub tells low from full speed by which line carries the pull-up,
+        // so those two are known at connect — but high speed is only
+        // established by the reset handshake, and until that completes the
+        // hub reports a high-speed device as full speed (USB 2.0 §11.8.2,
+        // §11.24.2.7.1).
+        //
+        // Routing on the stale value sends every high-speed device behind a
+        // hub through the parent's transaction translator as if it were
+        // full speed. The device answers at 480 Mbit/s to a split
+        // transaction never meant for it, and the transfer fails with a
+        // transaction error that names nothing useful.
+        let speed = {
+            let mut speed = speed;
+            for _ in 0..PORT_ENABLE_POLLS {
+                let (status, _) = self.get_port_status(port).await?;
+                if status.contains(PortStatus::ENABLED) {
+                    speed = status.into();
+                    break;
+                }
+                Timer::after_millis(PORT_ENABLE_POLL_MS).await;
+            }
+            speed
+        };
+
+        let route = match self.route.split() {
+            Some(parent_split) => match speed {
+                Speed::Low => BusRoute::Translated(SplitInfo::new(
+                    parent_split.hub_addr(),
+                    parent_split.port(),
+                    SplitSpeed::Low,
+                )),
+                Speed::Full => BusRoute::Translated(SplitInfo::new(
+                    parent_split.hub_addr(),
+                    parent_split.port(),
+                    SplitSpeed::Full,
+                )),
+                Speed::High => BusRoute::Direct(speed),
+            },
+            None => {
+                let split_speed = match (speed, self.route.device_speed()) {
+                    (Speed::Low, Speed::Full | Speed::High) => Some(SplitSpeed::Low),
+                    (Speed::Full, Speed::High) => Some(SplitSpeed::Full),
+                    _ => None,
+                };
+                match split_speed {
+                    Some(ss) => BusRoute::Translated(SplitInfo::new(self.device_address, port + 1, ss)),
+                    None => BusRoute::Direct(speed),
+                }
+            }
+        };
+
+        let (info, config_len) = self.bus.enumerate(route, config_buffer).await?;
+
+        // Store the device address in the LUT for later retrieval on disconnect.
+        // A hub may report more ports than MAX_PORTS; devices on the excess
+        // ports still enumerate, but their [`HubEvent::DeviceRemoved`] carries
+        // no address (the caller cannot free it).
+        if let Some(device_ref) = self.device_lut.get_mut(port as usize) {
+            *device_ref = NonZeroU8::new(info.device_address);
+        }
+
+        Ok((info, config_len))
     }
 
     async fn port_feature(&mut self, set: bool, feature: PortFeature, port: u8, selector: u8) -> Result<(), HostError> {
         let setup = SetupPacket {
-            request_type: RequestType::OUT | RequestType::TYPE_CLASS | RequestType::RECIPIENT_OTHER,
-            request: if set { SET_FEATURE } else { CLEAR_FEATURE },
+            request_type: RequestType {
+                direction: Direction::Out,
+                control_type: ControlType::Class,
+                recipient: Recipient::Other,
+            },
+            request: if set {
+                Request::SET_FEATURE
+            } else {
+                Request::CLEAR_FEATURE
+            },
             value: feature as u16,
             index: ((selector as u16) << 8) | (port + 1) as u16,
             length: 0,
         };
-        self.control_channel.control_out(&setup, &[]).await?;
+        self.control_channel.control_out(&setup.to_bytes(), &[]).await?;
         Ok(())
     }
 
     async fn get_port_status(&mut self, port: u8) -> Result<(PortStatus, PortStatusChange), HostError> {
         let setup = SetupPacket {
-            request_type: RequestType::IN | RequestType::TYPE_CLASS | RequestType::RECIPIENT_OTHER,
-            request: GET_STATUS,
+            request_type: RequestType {
+                direction: Direction::In,
+                control_type: ControlType::Class,
+                recipient: Recipient::Other,
+            },
+            request: Request::GET_STATUS,
             value: 0,
             index: (port + 1) as u16,
             length: 4,
         };
-        let mut buf = [0u16; 2];
-        self.control_channel.control_in(&setup, buf.as_mut_bytes()).await?;
+        let mut buf = [0u8; 4];
+        self.control_channel.control_in(&setup.to_bytes(), &mut buf).await?;
         Ok((
-            PortStatus::from_bits_truncate(buf[0]),
-            PortStatusChange::from_bits_truncate(buf[1]),
+            PortStatus::from_bits_truncate(u16::from_le_bytes(buf[..2].try_into().unwrap())),
+            PortStatusChange::from_bits_truncate(u16::from_le_bytes(buf[2..].try_into().unwrap())),
         ))
     }
 }
@@ -281,33 +453,101 @@ impl HubInterrupt<'_> {
     }
 }
 
-/// USB 2.0 Spec 11.23.2.1
-#[derive(KnownLayout, FromBytes, Immutable, Clone, Debug)]
+/// USB Hub class descriptor (USB 2.0 §11.23.2.1)
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[repr(C)]
-struct HubDescriptor {
-    len: u8,
-    desc_type: u8,
-    port_num: u8,
-    characteristics0: u8,
-    characteristics1: u8,
+pub struct HubDescriptor {
+    /// Number of ports.
+    pub port_num: u8,
+    /// Characteristics bitmap.
+    pub characteristics: u16,
     /// Power-on delay in units of 2ms.
-    power_on_delay: u8,
-    max_current: u8,
-    port_buf: [u8; 32],
+    pub power_on_delay: u8,
+    /// Maximum current requirements of the hub.
+    pub max_current: u8,
+    /// Device removable bitmap (variable size).
+    ///
+    /// Meaning of bit values:
+    /// - 0 if the device is removable
+    /// - 1 if the device is not removable
+    ///
+    /// Bit 0 is reserved.
+    pub device_removable: [u8; 32],
+    /// Port power control mask bitmap (variable size).
+    ///
+    /// All bits should be 1 for compatibility with USB 1.0 code.
+    pub port_power_ctrl_mask: [u8; 32],
+}
+
+impl HubDescriptor {
+    /// Current size of (device_removable)[Self::device_removable] and (port_power_ctrl_mask)[Self::port_power_ctrl_mask].
+    pub fn variable_bitmap_size(&self) -> usize {
+        // bit 0 is reserved
+        Ord::max(1, (self.port_num as usize).div_ceil(u8::BITS as usize))
+    }
+}
+
+impl VariableSizeDescriptor for HubDescriptor {
+    const MIN_LEN: u8 = 7 + 2; // bit 0 is reserved
+    const MAX_LEN: u8 = 7 + 2 * 255u8.div_ceil(u8::BITS as u8);
+
+    /// Matches length with the number of ports.
+    fn match_bytes_len(bytes: &[u8]) -> bool {
+        if bytes.len() < 3 {
+            return false;
+        }
+        let len = bytes[0] as usize;
+        let port_num = bytes[2] as usize;
+        len == 7 + 2 * Ord::max(1, port_num.div_ceil(u8::BITS as usize))
+    }
 }
 
 impl USBDescriptor for HubDescriptor {
-    const SIZE: usize = core::mem::size_of::<Self>();
+    const BUF_SIZE: usize = Self::MAX_LEN as usize;
     const DESC_TYPE: u8 = 0x29;
-    type Error = ();
+    type Error = DescriptorError;
 
     fn try_from_bytes(bytes: &[u8]) -> Result<Self, Self::Error> {
-        let (byref, _) = Self::ref_from_prefix(bytes).map_err(|_| ())?;
-        if byref.desc_type != Self::DESC_TYPE {
-            return Err(());
+        Self::match_bytes(bytes)?;
+        let port_num = bytes[2];
+        let n = Ord::max(1, (port_num as usize).div_ceil(u8::BITS as usize));
+        let mut device_removable = [0u8; _];
+        let mut port_power_ctrl_mask = [0u8; _];
+        if let Some(data) = bytes.get(7..) {
+            device_removable[..n]
+                .iter_mut()
+                .zip(data.iter())
+                .for_each(|(v, d)| *v = *d);
         }
-        Ok(byref.clone())
+        if let Some(data) = bytes.get(7 + n..) {
+            port_power_ctrl_mask[..n]
+                .iter_mut()
+                .zip(data.iter())
+                .for_each(|(v, d)| *v = *d);
+        }
+        Ok(Self {
+            port_num,
+            characteristics: u16::from_le_bytes([bytes[3], bytes[4]]),
+            power_on_delay: bytes[5],
+            max_current: bytes[6],
+            device_removable,
+            port_power_ctrl_mask,
+        })
+    }
+}
+
+impl WritableDescriptor for HubDescriptor {
+    fn write_to_bytes(&self, bytes: &mut [u8]) -> Result<usize, Self::Error> {
+        let n = Ord::max(1, self.port_num.div_ceil(u8::BITS as u8));
+        Self::prepare_bytes(bytes, 7 + 2 * n)?;
+        bytes[2] = self.port_num;
+        [bytes[3], bytes[4]] = self.characteristics.to_le_bytes();
+        bytes[5] = self.power_on_delay;
+        bytes[6] = self.max_current;
+        let n = n as usize;
+        bytes[7..7 + n].copy_from_slice(&self.device_removable[..n]);
+        bytes[7 + n..7 + 2 * n].copy_from_slice(&self.port_power_ctrl_mask[..n]);
+        Ok(bytes[0] as usize)
     }
 }
 
@@ -429,7 +669,7 @@ impl From<PortStatus> for Speed {
 
 #[cfg(test)]
 pub mod tests {
-    use super::HubInterrupt;
+    use super::*;
 
     #[test]
     fn test_hub_interrupt_0() {
@@ -487,5 +727,35 @@ pub mod tests {
         // empty byte
         assert_eq!(changes.take_port_change(), Some(22));
         assert_eq!(changes.take_port_change(), None);
+    }
+
+    #[test]
+    fn roundtrip_hub_descriptor() {
+        let descriptor = HubDescriptor {
+            port_num: 0x11,
+            characteristics: 0x2233,
+            power_on_delay: 0x44,
+            max_current: 0x55,
+            device_removable: {
+                let mut device_removable = [0u8; _];
+                device_removable[0] = 0b1111_1110; // 0x1-0x7
+                device_removable[1] = 0b1111_1111; // 0x8-0xf
+                device_removable[2] = 0b0000_0011; // 0x10-0x11
+                device_removable
+            },
+            port_power_ctrl_mask: {
+                let mut port_power_ctrl_mask = [0u8; _];
+                port_power_ctrl_mask[0] = 0b1111_1111; // 0x0-0x7
+                port_power_ctrl_mask[1] = 0b1111_1111; // 0x8-0xf
+                port_power_ctrl_mask[2] = 0b0000_0011; // 0x10-0x11
+                port_power_ctrl_mask
+            },
+        };
+        let mut bytes = [0u8; HubDescriptor::BUF_SIZE];
+        assert_eq!(
+            descriptor.write_to_bytes(&mut bytes),
+            Ok(7 + 2 * 0x11usize.div_ceil(u8::BITS as usize))
+        );
+        assert_eq!(HubDescriptor::try_from_bytes(&bytes), Ok(descriptor));
     }
 }

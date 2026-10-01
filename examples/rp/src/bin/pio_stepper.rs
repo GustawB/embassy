@@ -5,19 +5,20 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::{InterruptHandler, Pio};
 use embassy_rp::pio_programs::stepper::{PioStepper, PioStepperProgram};
 use embassy_time::{Duration, Timer, with_timeout};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
 });
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let Pio {
@@ -25,7 +26,7 @@ async fn main(_spawner: Spawner) {
     } = Pio::new(p.PIO0, Irqs);
 
     let prg = PioStepperProgram::new(&mut common);
-    let mut stepper = PioStepper::new(&mut common, sm0, irq0, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7, &prg);
+    let mut stepper = PioStepper::new(&mut common, sm0, p.PIN_4, p.PIN_5, p.PIN_6, p.PIN_7, irq0, &prg);
     stepper.set_frequency(120);
     loop {
         info!("CW full steps");

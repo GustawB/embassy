@@ -65,9 +65,9 @@ impl<'d> Qdec<'d> {
     /// Create a new QDEC.
     pub fn new<T: Instance>(
         qdec: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         a: Peri<'d, impl GpioPin>,
         b: Peri<'d, impl GpioPin>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(qdec, a.into(), b.into(), None, config)
@@ -76,10 +76,10 @@ impl<'d> Qdec<'d> {
     /// Create a new QDEC, with a pin for LED output.
     pub fn new_with_led<T: Instance>(
         qdec: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         a: Peri<'d, impl GpioPin>,
         b: Peri<'d, impl GpioPin>,
         led: Peri<'d, impl GpioPin>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         config: Config,
     ) -> Self {
         Self::new_inner(qdec, a.into(), b.into(), Some(led.into()), config)
@@ -157,9 +157,12 @@ impl<'d> Qdec<'d> {
     }
 
     /// Perform an asynchronous read of the decoder.
-    /// The returned future can be awaited to obtain the number of steps.
+    /// The returned future can be awaited to obtain the number of steps
+    /// accumulated since the previous read.
     ///
-    /// If the future is dropped, the read is cancelled.
+    /// This method is cancel-safe: if the future is dropped before it
+    /// completes, no counts are lost; they stay in the accumulator and are
+    /// returned by the next read.
     ///
     /// # Example
     ///
@@ -174,13 +177,12 @@ impl<'d> Qdec<'d> {
     /// # async {
     /// # let p: embassy_nrf::Peripherals = todo!();
     /// let config = qdec::Config::default();
-    /// let mut q = Qdec::new(p.QDEC, Irqs, p.P0_31, p.P0_30, config);
+    /// let mut q = Qdec::new(p.QDEC, p.P0_31, p.P0_30, Irqs, config);
     /// let delta = q.read().await;
     /// # };
     /// ```
     pub async fn read(&mut self) -> i16 {
         self.r.intenset().write(|w| w.set_reportrdy(true));
-        self.r.tasks_readclracc().write_value(1);
 
         let state = self.state;
         let r = self.r;
@@ -190,6 +192,7 @@ impl<'d> Qdec<'d> {
                 Poll::Pending
             } else {
                 r.events_reportrdy().write_value(0);
+                r.tasks_readclracc().write_value(1);
                 let acc = r.accread().read();
                 Poll::Ready(acc as i16)
             }

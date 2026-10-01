@@ -31,10 +31,10 @@ impl Registers {
         &mut self.msg_ram_mut().transmit.tbsa[bufidx]
     }
     pub fn msg_ram_mut(&self) -> &mut RegisterBlock {
-        #[cfg(can_fdcan_h7)]
+        #[cfg(can_fdcan_v2)]
         let ptr = self.msgram.ram(self.msg_ram_offset / 4).as_ptr() as *mut RegisterBlock;
 
-        #[cfg(not(can_fdcan_h7))]
+        #[cfg(not(can_fdcan_v2))]
         let ptr = self.msgram.as_ptr() as *mut RegisterBlock;
 
         unsafe { &mut (*ptr) }
@@ -74,13 +74,26 @@ impl Registers {
     #[cfg(feature = "time")]
     pub fn calc_timestamp(&self, ns_per_timer_tick: u64, ts_val: u16) -> Timestamp {
         let now_embassy = embassy_time::Instant::now();
+        // With TIM3 driving both embassy-time and the FDCAN timestamp counter
+        // (`TimestampSource::FromTIM3`), `ts_val` is the low 16 bits of the tick
+        // count at start of frame, whatever the tick rate. The delta is unambiguous
+        // as long as fewer than 2^16 ticks pass between the frame and this call.
+        #[cfg(time_driver_tim3)]
+        if self.timestamp_source_is_tim3() {
+            let delta = (now_embassy.as_ticks() as u16).wrapping_sub(ts_val);
+            return now_embassy.saturating_sub(embassy_time::Duration::from_ticks(u64::from(delta)));
+        }
         if ns_per_timer_tick == 0 {
             return now_embassy;
         }
         let cantime = { self.regs.tscv().read().tsc() };
         let delta = cantime.overflowing_sub(ts_val).0 as u64;
         let ns = ns_per_timer_tick * delta as u64;
-        now_embassy - embassy_time::Duration::from_nanos(ns)
+        // Saturate instead of panicking: shortly after boot `now_embassy` can be
+        // smaller than the peripheral-timer-derived `ns` delta (the FDCAN
+        // timestamp counter and the embassy clock aren't reset in lockstep), which
+        // would otherwise underflow this subtraction on the very first RX frame.
+        now_embassy.saturating_sub(embassy_time::Duration::from_nanos(ns))
     }
 
     #[cfg(not(feature = "time"))]
@@ -88,14 +101,40 @@ impl Registers {
         ts_val
     }
 
-    pub fn put_tx_frame(&self, bufidx: usize, header: &Header, buffer: &[u8]) {
+    #[cfg(time_driver_tim3)]
+    fn timestamp_source_is_tim3(&self) -> bool {
+        cfg_if! {
+            if #[cfg(can_fdcan_v2)] {
+                self.regs.tscc().read().tss() == 2
+            } else {
+                self.regs.tscc().read().tss() == stm32_metapac::can::vals::Tss::External
+            }
+        }
+    }
+
+    pub fn put_tx_frame(&self, bufidx: usize, header: &Header, buffer: &[u8], marker: Option<u8>) {
         let mailbox = self.tx_buffer_element(bufidx);
         mailbox.reset();
-        put_tx_header(mailbox, header);
+        put_tx_header(mailbox, header, marker);
         put_tx_data(mailbox, buffer);
 
         // Set <idx as Mailbox> as ready to transmit
         self.regs.txbar().modify(|w| w.set_ar(bufidx, true));
+    }
+
+    /// Pops the oldest TX event: frame id, message marker and raw start-of-frame timestamp.
+    pub fn tx_event(&self) -> Option<(embedded_can::Id, u8, u16)> {
+        let status = self.regs.txefs().read();
+        if status.effl() == 0 {
+            return None;
+        }
+        let index = status.efgi();
+        let event = self.msg_ram_mut().transmit.efsa[index as usize].read();
+        let id = make_id(event.id().bits(), event.xtd().bits());
+        let marker = event.mm().bits();
+        let ts = event.txts().bits();
+        self.regs.txefa().write(|w| w.set_efai(index));
+        Some((id, marker, ts))
     }
 
     fn reg_to_error(value: u8) -> Option<BusError> {
@@ -115,7 +154,7 @@ impl Registers {
     pub fn curr_error(&self) -> Option<BusError> {
         let err = { self.regs.psr().read() };
         cfg_if! {
-            if #[cfg(can_fdcan_h7)] {
+            if #[cfg(can_fdcan_v2)] {
                 let lec = err.lec();
             } else {
                 let lec = err.lec().to_bits();
@@ -179,7 +218,7 @@ impl Registers {
             loop {
                 if can.txbcf().read().cf(bufidx) {
                     // Return false when a transmission has occured
-                    break can.txbto().read().to(bufidx) == false;
+                    break !can.txbto().read().to(bufidx);
                 }
             }
         } else {
@@ -220,7 +259,11 @@ impl Registers {
         }
     }
 
-    pub fn write<F: embedded_can::Frame + CanHeader>(&self, frame: &F) -> nb::Result<Option<F>, Infallible> {
+    pub fn write<F: embedded_can::Frame + CanHeader>(
+        &self,
+        frame: &F,
+        marker: Option<u8>,
+    ) -> nb::Result<Option<F>, Infallible> {
         let (idx, pending_frame) = if self.tx_queue_is_full() {
             if self.tx_queue_mode() == TxBufferMode::Fifo {
                 // Does not make sense to cancel a pending frame when using FIFO
@@ -247,7 +290,7 @@ impl Registers {
             (idx, None)
         };
 
-        self.put_tx_frame(idx as usize, frame.header(), frame.data());
+        self.put_tx_frame(idx as usize, frame.header(), frame.data(), marker);
 
         Ok(pending_frame)
     }
@@ -260,7 +303,7 @@ impl Registers {
     #[inline]
     fn enter_init_mode(&self) {
         self.regs.cccr().modify(|w| w.set_init(true));
-        while false == self.regs.cccr().read().init() {}
+        while !self.regs.cccr().read().init() {}
         self.regs.cccr().modify(|w| w.set_cce(true));
     }
 
@@ -343,14 +386,14 @@ impl Registers {
         // set extended filters list size to 8
         // REQUIRED: we use the memory map as if these settings are set
         // instead of re-calculating them.
-        #[cfg(not(can_fdcan_h7))]
+        #[cfg(not(can_fdcan_v2))]
         {
             self.regs.rxgfc().modify(|w| {
                 w.set_lss(crate::can::fd::message_ram::STANDARD_FILTER_MAX);
                 w.set_lse(crate::can::fd::message_ram::EXTENDED_FILTER_MAX);
             });
         }
-        #[cfg(can_fdcan_h7)]
+        #[cfg(can_fdcan_v2)]
         {
             self.regs
                 .sidfc()
@@ -362,13 +405,7 @@ impl Registers {
 
         self.configure_msg_ram();
 
-        // Enable timestamping
-        #[cfg(not(can_fdcan_h7))]
-        self.regs
-            .tscc()
-            .write(|w| w.set_tss(stm32_metapac::can::vals::Tss::Increment));
-        #[cfg(can_fdcan_h7)]
-        self.regs.tscc().write(|w| w.set_tss(0x01));
+        self.set_timestamp_counter_source(config.timestamp_source);
 
         // this isn't really documented in the reference manual
         // but corresponding txbtie bit has to be set for the TC (TxComplete) interrupt to fire
@@ -385,6 +422,7 @@ impl Registers {
         });
 
         self.set_data_bit_timing(config.dbtr);
+        self.set_transceiver_delay_compensation(config.dbtr);
         self.set_nominal_bit_timing(config.nbtr);
         self.set_automatic_retransmit(config.automatic_retransmit);
         self.set_transmit_pause(config.transmit_pause);
@@ -402,7 +440,7 @@ impl Registers {
 
         self.regs.cccr().modify(|w| w.set_cce(false));
         self.regs.cccr().modify(|w| w.set_init(false));
-        while self.regs.cccr().read().init() == true {}
+        while self.regs.cccr().read().init() {}
     }
 
     /// Moves out of ConfigMode and into specified mode
@@ -449,6 +487,15 @@ impl Registers {
             w.set_dtseg1(btr.dtseg1() - 1);
             w.set_dtseg2(btr.dtseg2() - 1);
             w.set_dsjw(btr.dsjw() - 1);
+            w.set_tdc(btr.transceiver_delay_compensation);
+        });
+    }
+
+    #[inline]
+    pub fn set_transceiver_delay_compensation(&self, btr: DataBitTiming) {
+        self.regs.tdcr().write(|w| {
+            w.set_tdco(btr.tdco());
+            w.set_tdcf(btr.tdcf());
         });
     }
 
@@ -500,9 +547,9 @@ impl Registers {
 
         self.regs.cccr().modify(|w| {
             w.set_fdoe(fdoe);
-            #[cfg(can_fdcan_h7)]
+            #[cfg(can_fdcan_v2)]
             w.set_bse(brse);
-            #[cfg(not(can_fdcan_h7))]
+            #[cfg(not(can_fdcan_v2))]
             w.set_brse(brse);
         });
     }
@@ -515,19 +562,18 @@ impl Registers {
 
     /// Configures and resets the timestamp counter
     #[inline]
-    #[allow(unused)]
     pub fn set_timestamp_counter_source(&self, select: TimestampSource) {
-        #[cfg(can_fdcan_h7)]
+        #[cfg(can_fdcan_v2)]
         let (tcp, tss) = match select {
             TimestampSource::None => (0, 0),
-            TimestampSource::Prescaler(p) => (p as u8, 1),
+            TimestampSource::Prescaler(p) => (p as u8 - 1, 1),
             TimestampSource::FromTIM3 => (0, 2),
         };
 
-        #[cfg(not(can_fdcan_h7))]
+        #[cfg(not(can_fdcan_v2))]
         let (tcp, tss) = match select {
             TimestampSource::None => (0, stm32_metapac::can::vals::Tss::Zero),
-            TimestampSource::Prescaler(p) => (p as u8, stm32_metapac::can::vals::Tss::Increment),
+            TimestampSource::Prescaler(p) => (p as u8 - 1, stm32_metapac::can::vals::Tss::Increment),
             TimestampSource::FromTIM3 => (0, stm32_metapac::can::vals::Tss::External),
         };
 
@@ -537,7 +583,7 @@ impl Registers {
         });
     }
 
-    #[cfg(not(can_fdcan_h7))]
+    #[cfg(not(can_fdcan_v2))]
     /// Configures the global filter settings
     #[inline]
     pub fn set_global_filter(&self, filter: GlobalFilter) {
@@ -560,7 +606,7 @@ impl Registers {
         });
     }
 
-    #[cfg(can_fdcan_h7)]
+    #[cfg(can_fdcan_v2)]
     /// Configures the global filter settings
     #[inline]
     pub fn set_global_filter(&self, filter: GlobalFilter) {
@@ -584,10 +630,10 @@ impl Registers {
         });
     }
 
-    #[cfg(not(can_fdcan_h7))]
+    #[cfg(not(can_fdcan_v2))]
     fn configure_msg_ram(&self) {}
 
-    #[cfg(can_fdcan_h7)]
+    #[cfg(can_fdcan_v2)]
     fn configure_msg_ram(&self) {
         let r = self.regs;
 
@@ -659,11 +705,11 @@ fn make_id(id: u32, extended: bool) -> embedded_can::Id {
     }
 }
 
-fn put_tx_header(mailbox: &mut TxBufferElement, header: &Header) {
+fn put_tx_header(mailbox: &mut TxBufferElement, header: &Header, marker: Option<u8>) {
     let (id, id_type) = match header.id() {
         // A standard identifier has to be written to ID[28:18].
         embedded_can::Id::Standard(id) => ((id.as_raw() as u32) << 18, IdType::StandardId),
-        embedded_can::Id::Extended(id) => (id.as_raw() as u32, IdType::ExtendedId),
+        embedded_can::Id::Extended(id) => (id.as_raw(), IdType::ExtendedId),
     };
 
     // Use FDCAN only for DLC > 8. FDCAN users can revise this if required.
@@ -677,11 +723,11 @@ fn put_tx_header(mailbox: &mut TxBufferElement, header: &Header) {
     mailbox.header.write(|w| {
         unsafe { w.id().bits(id) }
             .rtr()
-            .bit(header.len() == 0 && header.rtr())
+            .bit(header.rtr())
             .xtd()
             .set_id_type(id_type)
             .set_len(DataLength::new(header.len(), frame_format))
-            .set_event(Event::NoEvent)
+            .set_event(marker.into())
             .fdf()
             .set_format(frame_format)
             .brs()
@@ -695,15 +741,15 @@ fn put_tx_data(mailbox: &mut TxBufferElement, buffer: &[u8]) {
     let len = buffer.len();
     let data = unsafe { slice::from_raw_parts_mut(lbuffer.as_mut_ptr() as *mut u8, len) };
     data[..len].copy_from_slice(&buffer[..len]);
-    let data_len = ((len) + 3) / 4;
+    let data_len = (len).div_ceil(4);
     for (register, byte) in mailbox.data.iter_mut().zip(lbuffer[..data_len].iter()) {
-        unsafe { register.write(*byte) };
+        register.set(*byte);
     }
 }
 
 fn data_from_fifo(buffer: &mut [u8], mailbox: &RxFifoElement, len: usize) {
     for (i, register) in mailbox.data.iter().enumerate() {
-        let register_value = register.read();
+        let register_value = register.get();
         let register_bytes = unsafe { slice::from_raw_parts(&register_value as *const u32 as *const u8, 4) };
         let num_bytes = (len) - i * 4;
         if num_bytes <= 4 {
@@ -716,7 +762,7 @@ fn data_from_fifo(buffer: &mut [u8], mailbox: &RxFifoElement, len: usize) {
 
 fn data_from_tx_buffer(buffer: &mut [u8], mailbox: &TxBufferElement, len: usize) {
     for (i, register) in mailbox.data.iter().enumerate() {
-        let register_value = register.read();
+        let register_value = register.get();
         let register_bytes = unsafe { slice::from_raw_parts(&register_value as *const u32 as *const u8, 4) };
         let num_bytes = (len) - i * 4;
         if num_bytes <= 4 {

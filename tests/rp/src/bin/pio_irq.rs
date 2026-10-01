@@ -6,12 +6,13 @@ teleprobe_meta::target!(b"rpi-pico");
 teleprobe_meta::target!(b"pimoroni-pico-plus-2");
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::peripherals::PIO0;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Config, InterruptHandler, Pio};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => InterruptHandler<PIO0>;
@@ -47,8 +48,8 @@ async fn main(_spawner: Spawner) {
     cortex_m::asm::nop();
     assert!(!irq_flags.check(1));
     irq_flags.clear(0);
-    cortex_m::asm::nop();
-    assert!(irq_flags.check(1));
+    // no hard latency guarantees for PIO->CPU interrupt checking
+    assert!((0..10).any(|_| irq_flags.check(1)));
 
     info!("Test OK");
     cortex_m::asm::bkpt();

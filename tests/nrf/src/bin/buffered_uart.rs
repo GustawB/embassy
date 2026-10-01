@@ -6,11 +6,12 @@
 mod common;
 
 use defmt::{panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::buffered_uarte::{self, BufferedUarte};
 use embassy_nrf::{peripherals, uarte};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -24,23 +25,11 @@ async fn main(_spawner: Spawner) {
 
     // test teardown + recreate of the buffereduarte works fine.
     for _ in 0..2 {
-        let u = BufferedUarte::new(
-            peri!(p, UART0).reborrow(),
-            p.TIMER0.reborrow(),
-            p.PPI_CH0.reborrow(),
-            p.PPI_CH1.reborrow(),
-            p.PPI_GROUP0.reborrow(),
-            peri!(p, PIN_A).reborrow(),
-            peri!(p, PIN_B).reborrow(),
-            irqs!(UART0_BUFFERED),
-            config.clone(),
-            &mut rx_buffer,
-            &mut tx_buffer,
-        );
+        let u = buffered_uarte_new!(p, config.clone(), &mut rx_buffer, &mut tx_buffer);
 
         info!("uarte initialized!");
 
-        let (mut rx, mut tx) = u.split();
+        let (mut tx, mut rx) = u.split();
 
         const COUNT: usize = 40_000;
 

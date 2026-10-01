@@ -11,8 +11,8 @@
 //! passed from exception mode e.g. out of an interrupt handler.
 //!
 //! This module provides a bounded channel that has a limit on the number of
-//! messages that it can store, and if this limit is reached, trying to send
-//! another message will result in an error being returned.
+//! messages that it can store. If this limit is reached, trying to send
+//! another message either waits or returns an error depending on the function.
 
 use core::cell::RefCell;
 use core::future::poll_fn;
@@ -47,9 +47,9 @@ impl<'a, M: RawMutex, T> Channel<'a, M, T> {
     ///
     /// The provided buffer will be used and reused by the channel's logic, and thus dictates the
     /// channel's capacity.
-    pub fn new(buf: &'a mut [T]) -> Self {
+    pub const fn new(buf: &'a mut [T]) -> Self {
         let len = buf.len();
-        assert!(len != 0);
+        core::assert!(len != 0);
 
         Self {
             buf: BufferPtr(buf.as_mut_ptr()),
@@ -169,13 +169,6 @@ impl<'a, M: RawMutex, T> Sender<'a, M, T> {
                 }
             })
         })
-    }
-
-    /// Clears all elements in the channel.
-    pub fn clear(&mut self) {
-        self.channel.state.lock(|s| {
-            s.borrow_mut().clear();
-        });
     }
 
     /// Returns the number of elements currently in the channel.

@@ -2,9 +2,10 @@
 #![no_main]
 
 use defmt::*;
-use embassy_stm32::adc::{Adc, AdcChannel, SampleTime, adc4};
+use defmt_rtt as _;
+use embassy_stm32::adc::{Adc, AdcChannel, Config, OversamplingRatio, Resolution, SampleTime};
 use embassy_stm32::{bind_interrupts, dma, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     GPDMA1_CHANNEL1 => dma::InterruptHandler<peripherals::GPDMA1_CH1>;
@@ -17,35 +18,34 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let mut p = embassy_stm32::init(config);
 
     // **** ADC4 init ****
-    let mut adc4 = Adc::new_adc4(p.ADC4);
+    let mut adc4_config = Config::default();
+    adc4_config.resolution = Some(Resolution::Bits12);
+    adc4_config.averaging = Some(OversamplingRatio::X256);
+    let mut adc4 = Adc::new_blocking(p.ADC4, adc4_config);
     let mut adc4_pin1 = p.PA0; // A4
     let mut adc4_pin2 = p.PA1; // A5
-    adc4.set_resolution_adc4(adc4::Resolution::Bits12);
-    adc4.set_averaging_adc4(adc4::Averaging::Samples256);
 
-    let max4 = adc4::resolution_to_max_count(adc4::Resolution::Bits12);
+    let max4 = adc4.resolution().max_count();
 
     // **** ADC4 blocking read ****
-    let raw: u16 = adc4.blocking_read(&mut adc4_pin1, adc4::SampleTime::Cycles15);
+    let raw: u16 = adc4.blocking_read(&mut adc4_pin1, SampleTime::Cycles15);
     let volt: f32 = 3.0 * raw as f32 / max4 as f32;
     info!("Read adc4 pin 1 {}", volt);
 
-    let raw: u16 = adc4.blocking_read(&mut adc4_pin2, adc4::SampleTime::Cycles15);
+    let raw: u16 = adc4.blocking_read(&mut adc4_pin2, SampleTime::Cycles15);
     let volt: f32 = 3.3 * raw as f32 / max4 as f32;
     info!("Read adc4 pin 2 {}", volt);
 
     // **** ADC4 async read ****
-    let mut degraded41 = adc4_pin1.degrade_adc();
-    let mut degraded42 = adc4_pin2.degrade_adc();
     let mut measurements = [0u16; 2];
 
     // The channels must be in ascending order and can't repeat for ADC4
-    adc4.read(
+    adc4.read_sequence(
         p.GPDMA1_CH1.reborrow(),
         Irqs,
         [
-            (&mut degraded42, SampleTime::Cycles125),
-            (&mut degraded41, SampleTime::Cycles125),
+            (adc4_pin1.reborrow_adc(), SampleTime::Cycles125),
+            (adc4_pin2.reborrow_adc(), SampleTime::Cycles125),
         ]
         .into_iter(),
         None,
