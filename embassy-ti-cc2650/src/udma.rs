@@ -77,7 +77,7 @@ impl Udma {
     }
 
     #[inline]
-    pub(crate) fn uart_transfer_tx(&self, src: u32, len: usize) {
+    pub(crate) unsafe fn uart_transfer_tx(&self, src: u32, len: usize) {
         unsafe {
             (*CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
                 src as *mut (),

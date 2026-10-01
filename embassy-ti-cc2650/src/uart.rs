@@ -393,7 +393,9 @@ impl<T: Instance> UartFullTx<T> {
         });
 
         // Setup uDMA transfer.
-        UDMA.uart_transfer_tx(src, buffer.len());
+        unsafe {
+            UDMA.uart_transfer_tx(src, buffer.len());
+        };
 
         // Prevent reordering; in this case,
         // setup MUST happen before starting the transfer.
@@ -424,7 +426,9 @@ impl<T: Instance> UartFullTx<T> {
     #[allow(unused)]
     pub fn write_blocking(&mut self, buffer: &[u8]) -> Result<(), TxError> {
         let src = self.sanitize_tx_input_buffer(buffer)?;
-        UDMA.uart_transfer_tx(src, buffer.len());
+        unsafe {
+            UDMA.uart_transfer_tx(src, buffer.len());
+        };
 
         compiler_fence(Ordering::SeqCst);
 
