@@ -22,10 +22,10 @@ use paste::paste;
 
 const UART0_TX_CHANNEL: u32 = 2;
 
-// 1073872896 is the start address of registers for UDMA0.
+// 0x40020000 is the start address of registers for UDMA0.
 // cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(IUdma, udma0, 1073872896);
+// address from said crate.
+define_peri!(IUdma, udma0, 0x40020000);
 
 pub(crate) static UDMA: Udma = Udma {};
 
@@ -44,7 +44,7 @@ impl Udma {
         // are reserved.
         IUDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
 
-        IUDMA.reqdone.reset();
+        IUDMA.reqdone.write(|w| unsafe { w.chnls().bits(u32::MAX) });
 
         IUDMA.cfg.write(|w| w.masterenable().set_bit());
     }
@@ -77,12 +77,12 @@ impl Udma {
     }
 
     #[inline]
-    pub(crate) fn uart_transfer_tx(&self, mem: &[u8]) {
+    pub(crate) unsafe fn uart_transfer_tx(&self, src: u32, len: usize) {
         unsafe {
             (*CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
-                mem.as_ptr() as *mut (),
+                src as *mut (),
                 &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
-                mem.len() as u32,
+                len as u32,
             );
             driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_TX_CHANNEL);
         }
@@ -379,6 +379,8 @@ struct ChannelControlMap {
     alternate_channel_31: ChannelControlEntry<Alternate, 63>, // Reserved
 }
 
+/// `ChannelControlMap` needs to be a static object which is then passed to the UDMA config.
+/// But static objects need to be `Sync`, so it's wrapped in this wrapper.
 struct SyncMapWrapper(UnsafeCell<ChannelControlMap>);
 unsafe impl Sync for SyncMapWrapper {}
 

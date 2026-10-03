@@ -2,12 +2,13 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, SampleTime};
+use embassy_stm32::adc::{Adc, Config, SampleTime};
 use embassy_stm32::peripherals::ADC1;
 use embassy_stm32::{adc, bind_interrupts};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     ADC1_2 => adc::InterruptHandler<ADC1>;
@@ -18,11 +19,11 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     info!("Hello World!");
 
-    let mut adc = Adc::new(p.ADC1);
+    let mut adc = Adc::new(p.ADC1, Irqs, Config::default());
     let mut pin = p.PB1;
 
-    let mut vrefint = adc.enable_vref();
-    let vrefint_sample = adc.irq_read(&mut vrefint, SampleTime::Cycles135).await;
+    let mut vrefint = adc.enable_vrefint();
+    let vrefint_sample = adc.read(&mut vrefint, SampleTime::Cycles135).await;
     let convert_to_millivolts = |sample| {
         // From http://www.st.com/resource/en/datasheet/CD00161566.pdf
         // 5.3.4 Embedded reference voltage
@@ -32,7 +33,7 @@ async fn main(_spawner: Spawner) {
     };
 
     loop {
-        let v = adc.irq_read(&mut pin, SampleTime::Cycles135).await;
+        let v = adc.read(&mut pin, SampleTime::Cycles135).await;
         info!("--> {} - {} mV", v, convert_to_millivolts(v));
         Timer::after_millis(100).await;
     }

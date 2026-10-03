@@ -2,11 +2,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, AdcChannel as _, Clock, Presc, SampleTime};
+use embassy_stm32::adc::{Adc, AdcChannel as _, Clock, Config, Prescaler, SampleTime};
 use embassy_stm32::{bind_interrupts, dma, peripherals};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 static mut DMA_BUF: [u16; 2] = [0; 2];
 
@@ -22,20 +23,20 @@ async fn main(_spawner: Spawner) {
 
     info!("Hello World!");
 
-    let mut adc = Adc::new_with_clock(p.ADC1, Clock::Async { div: Presc::Div1 });
+    let mut config = Config::default();
+    config.clock = Clock::Async(Prescaler::Div1);
+    let mut adc = Adc::new_blocking(p.ADC1, config);
 
     let mut dma = p.DMA1_CH1;
     let mut vrefint = adc.enable_vrefint();
-    let mut vrefint_channel = vrefint.degrade_adc();
-    let mut pa0 = p.PA0.degrade_adc();
 
     loop {
-        adc.read(
+        adc.read_sequence(
             dma.reborrow(),
             Irqs,
             [
-                (&mut vrefint_channel, SampleTime::Cycles1605),
-                (&mut pa0, SampleTime::Cycles1605),
+                (vrefint.reborrow_adc(), SampleTime::Cycles1605),
+                (p.PA0.reborrow_adc(), SampleTime::Cycles1605),
             ]
             .into_iter(),
             None,

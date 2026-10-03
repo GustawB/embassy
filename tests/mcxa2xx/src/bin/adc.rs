@@ -3,7 +3,9 @@
 
 teleprobe_meta::target!(b"frdm-mcx-a266");
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_mcxa as hal;
 use embassy_mcxa::adc::{Command, CommandConfig, CommandId, Trigger};
 use embassy_mcxa::bind_interrupts;
 use embassy_mcxa::gpio::Output;
@@ -12,7 +14,7 @@ use hal::clocks::config::Div8;
 use hal::config::Config;
 use hal::pac::adc::Mode;
 use hal::peripherals::ADC0;
-use {defmt_rtt as _, embassy_mcxa as hal, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     ADC0 => adc::InterruptHandler<ADC0>;
@@ -35,7 +37,7 @@ async fn main(_spawner: Spawner) {
     let commands = &[Command::new_single(
         p.P2_4,
         CommandConfig {
-            resolution: Mode::DATA_16_BITS,
+            resolution: Mode::Data16Bits,
             ..Default::default()
         },
     )];

@@ -1,9 +1,10 @@
 use core::cell::RefCell;
+use core::convert::Infallible;
 use core::future::Future;
 use core::mem::MaybeUninit;
 
-use bt_hci::transport::WithIndicator;
-use bt_hci::{ControllerToHostPacket, FromHciBytes, FromHciBytesError, HostToControllerPacket, PacketKind, WriteHci};
+use aligned::{A4, Aligned};
+use bt_hci_transport::{PacketToController, ReadHciError};
 use embassy_futures::yield_now;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::zerocopy_channel;
@@ -53,6 +54,50 @@ pub(crate) struct BtRunner<'d> {
     addr: u32,
     h2b_write_pointer: u32,
     b2h_read_pointer: u32,
+    host_ctrl: HostCtrl,
+}
+
+/// Host-owned BTSDIO control bits.
+///
+/// Mirrors pico-sdk's Infineon-supplied WiFi/BT corruption fix
+/// (`8dbc6f20`, #1362): backplane register reads are not authoritative for
+/// host-owned state when both radios are fully utilized.
+#[derive(Default)]
+struct HostCtrl(u32);
+
+impl HostCtrl {
+    const fn new() -> Self {
+        Self(0)
+    }
+
+    const fn value(&self) -> u32 {
+        self.0
+    }
+
+    fn set_awake(&mut self, awake: bool) -> Option<u32> {
+        let old = self.0;
+        if awake {
+            self.0 |= BTSDIO_REG_WAKE_BT_BITMASK;
+        } else {
+            self.0 &= !BTSDIO_REG_WAKE_BT_BITMASK;
+        }
+        (self.0 != old).then_some(self.0)
+    }
+
+    fn set_host_ready(&mut self) -> u32 {
+        self.0 |= BTSDIO_REG_SW_RDY_BITMASK;
+        self.0
+    }
+
+    fn set_intr(&mut self) -> u32 {
+        self.0 |= BTSDIO_REG_DATA_VALID_BITMASK;
+        self.0
+    }
+
+    fn toggle_intr(&mut self) -> u32 {
+        self.0 ^= BTSDIO_REG_DATA_VALID_BITMASK;
+        self.0
+    }
 }
 
 const BT_HCI_MTU: usize = 1024;
@@ -95,6 +140,7 @@ pub(crate) fn new<'d>(state: &'d mut BtState) -> (BtRunner<'d>, BtDriver<'d>) {
             addr: 0,
             h2b_write_pointer: 0,
             b2h_read_pointer: 0,
+            host_ctrl: HostCtrl::new(),
         },
         BtDriver {
             rx: RefCell::new(rx_receiver),
@@ -166,21 +212,13 @@ pub(crate) fn read_firmware_patch_line(p_btfw_cb: &mut CybtFwCb, hfd: &mut HexFi
     0
 }
 
-async fn bt_toggle_intr(bus: &mut impl Bus) {
-    trace!("bt_toggle_intr");
-    let old_val = bus.bp_read32(HOST_CTRL_REG_ADDR).await;
-    // TODO: do we need to swap endianness on this read?
-    let new_val = old_val ^ BTSDIO_REG_DATA_VALID_BITMASK;
-    bus.bp_write32(HOST_CTRL_REG_ADDR, new_val).await;
-}
-
 impl<'a> BtRunner<'a> {
-    pub(crate) async fn init_bluetooth(&mut self, bus: &mut impl Bus, firmware: &[u8]) {
+    pub(crate) async fn init_bluetooth(&mut self, bus: &mut impl Bus, firmware: &[u8], buf: &mut Aligned<A4, [u8]>) {
         trace!("init_bluetooth");
         bus.bp_write32(CHIP.bluetooth_base_address + BT2WLAN_PWRUP_ADDR, BT2WLAN_PWRUP_WAKE)
             .await;
         Timer::after(Duration::from_millis(2)).await;
-        self.upload_bluetooth_firmware(bus, firmware).await;
+        self.upload_bluetooth_firmware(bus, firmware, buf).await;
         self.wait_bt_ready(bus).await;
         self.init_bt_buffers(bus).await;
         self.wait_bt_awake(bus).await;
@@ -188,7 +226,12 @@ impl<'a> BtRunner<'a> {
         self.bt_toggle_intr(bus).await;
     }
 
-    pub(crate) async fn upload_bluetooth_firmware(&mut self, bus: &mut impl Bus, firmware: &[u8]) {
+    pub(crate) async fn upload_bluetooth_firmware(
+        &mut self,
+        bus: &mut impl Bus,
+        firmware: &[u8],
+        buf: &mut Aligned<A4, [u8]>,
+    ) {
         // read version
         let version_length = firmware[0];
         let _version = &firmware[1..=version_length as usize];
@@ -260,7 +303,7 @@ impl<'a> BtRunner<'a> {
             assert!(dest_start_addr % 4 == 0);
             assert!(dest_end_addr % 4 == 0);
             assert!(aligned_data_buffer_index % 4 == 0);
-            bus.bp_write(dest_start_addr, buffer_to_write).await;
+            let _ = bus.bp_write(dest_start_addr, buffer_to_write, buf).await;
         }
     }
 
@@ -281,52 +324,47 @@ impl<'a> BtRunner<'a> {
 
     pub(crate) async fn wait_bt_awake(&mut self, bus: &mut impl Bus) {
         trace!("wait_bt_awake");
-        let mut success = false;
+        let mut last = 0;
         for _ in 0..300 {
-            let val = bus.bp_read32(BT_CTRL_REG_ADDR).await;
-            trace!("BT_CTRL_REG_ADDR = {:08x}", val);
-            if val & BTSDIO_REG_BT_AWAKE_BITMASK != 0 {
-                success = true;
-                break;
+            last = bus.bp_read32(BT_CTRL_REG_ADDR).await;
+            trace!("BT_CTRL_REG_ADDR = {:08x}", last);
+            if last & BTSDIO_REG_BT_AWAKE_BITMASK != 0 {
+                return;
             }
             Timer::after(Duration::from_millis(1)).await;
         }
-        assert!(success == true);
+        error!(
+            "bluetooth wake timeout: bt_ctrl={:08x} host_ctrl={:08x}",
+            last,
+            self.host_ctrl.value()
+        );
+        panic!("Bluetooth controller failed to acknowledge host wake");
     }
 
     pub(crate) async fn bt_set_host_ready(&mut self, bus: &mut impl Bus) {
         trace!("bt_set_host_ready");
-        let old_val = bus.bp_read32(HOST_CTRL_REG_ADDR).await;
-        // TODO: do we need to swap endianness on this read?
-        let new_val = old_val | BTSDIO_REG_SW_RDY_BITMASK;
-        bus.bp_write32(HOST_CTRL_REG_ADDR, new_val).await;
+        let value = self.host_ctrl.set_host_ready();
+        bus.bp_write32(HOST_CTRL_REG_ADDR, value).await;
     }
 
-    // TODO: use this
-    #[allow(dead_code)]
     pub(crate) async fn bt_set_awake(&mut self, bus: &mut impl Bus, awake: bool) {
         trace!("bt_set_awake");
-        let old_val = bus.bp_read32(HOST_CTRL_REG_ADDR).await;
-        // TODO: do we need to swap endianness on this read?
-        let new_val = if awake {
-            old_val | BTSDIO_REG_WAKE_BT_BITMASK
-        } else {
-            old_val & !BTSDIO_REG_WAKE_BT_BITMASK
-        };
-        bus.bp_write32(HOST_CTRL_REG_ADDR, new_val).await;
+        if let Some(value) = self.host_ctrl.set_awake(awake) {
+            bus.bp_write32(HOST_CTRL_REG_ADDR, value).await;
+        }
     }
 
     pub(crate) async fn bt_toggle_intr(&mut self, bus: &mut impl Bus) {
-        bt_toggle_intr(bus).await;
+        let value = self.host_ctrl.toggle_intr();
+        bus.bp_write32(HOST_CTRL_REG_ADDR, value).await;
     }
 
     // TODO: use this
     #[allow(dead_code)]
     pub(crate) async fn bt_set_intr(&mut self, bus: &mut impl Bus) {
         trace!("bt_set_intr");
-        let old_val = bus.bp_read32(HOST_CTRL_REG_ADDR).await;
-        let new_val = old_val | BTSDIO_REG_DATA_VALID_BITMASK;
-        bus.bp_write32(HOST_CTRL_REG_ADDR, new_val).await;
+        let value = self.host_ctrl.set_intr();
+        bus.bp_write32(HOST_CTRL_REG_ADDR, value).await;
     }
 
     pub(crate) async fn init_bt_buffers(&mut self, bus: &mut impl Bus) {
@@ -346,14 +384,14 @@ impl<'a> BtRunner<'a> {
         self.wait_bt_awake(bus).await;
     }
 
-    pub(crate) async fn hci_write(&mut self, bus: &mut impl Bus) {
+    pub(crate) async fn hci_write(&mut self, bus: &mut impl Bus, buf: &mut Aligned<A4, [u8]>) {
         self.bt_bus_request(bus).await;
 
         // NOTE(unwrap): we only call this when we do have a packet in the queue.
-        let buf = self.tx_chan.try_receive().unwrap();
-        debug!("HCI tx: {:02x}", crate::fmt::Bytes(&buf.buf[..buf.len]));
+        let msg = self.tx_chan.try_receive().unwrap();
+        debug!("HCI tx: {:02x}", crate::fmt::Bytes(&msg.buf[..msg.len]));
 
-        let len = buf.len as u32 - 1; // len doesn't include hci type byte
+        let len = msg.len as u32 - 1; // len doesn't include hci type byte
         let rounded_len = round_up(len, 4);
         let total_len = 4 + rounded_len;
 
@@ -373,26 +411,26 @@ impl<'a> BtRunner<'a> {
         header[0] = len as u8;
         header[1] = (len >> 8) as u8;
         header[2] = (len >> 16) as u8;
-        header[3] = buf.buf[0]; // HCI type byte
+        header[3] = msg.buf[0]; // HCI type byte
 
         // Write header
         let addr = self.addr + BTSDIO_OFFSET_HOST_WRITE_BUF + self.h2b_write_pointer;
-        bus.bp_write(addr, &header).await;
+        let _ = bus.bp_write(addr, &header, buf).await;
         self.h2b_write_pointer = (self.h2b_write_pointer + 4) % BTSDIO_FWBUF_SIZE;
 
         // Write payload.
-        let payload = &buf.buf[1..][..rounded_len as usize];
+        let payload = &msg.buf[1..][..rounded_len as usize];
         if self.h2b_write_pointer as usize + payload.len() > BTSDIO_FWBUF_SIZE as usize {
             // wraparound
             let n = BTSDIO_FWBUF_SIZE - self.h2b_write_pointer;
             let addr = self.addr + BTSDIO_OFFSET_HOST_WRITE_BUF + self.h2b_write_pointer;
-            bus.bp_write(addr, &payload[..n as usize]).await;
+            let _ = bus.bp_write(addr, &payload[..n as usize], buf).await;
             let addr = self.addr + BTSDIO_OFFSET_HOST_WRITE_BUF;
-            bus.bp_write(addr, &payload[n as usize..]).await;
+            let _ = bus.bp_write(addr, &payload[n as usize..], buf).await;
         } else {
             // no wraparound
             let addr = self.addr + BTSDIO_OFFSET_HOST_WRITE_BUF + self.h2b_write_pointer;
-            bus.bp_write(addr, payload).await;
+            let _ = bus.bp_write(addr, payload, buf).await;
         }
         self.h2b_write_pointer = (self.h2b_write_pointer + payload.len() as u32) % BTSDIO_FWBUF_SIZE;
 
@@ -400,9 +438,10 @@ impl<'a> BtRunner<'a> {
         bus.bp_write32(self.addr + BTSDIO_OFFSET_HOST2BT_IN, self.h2b_write_pointer)
             .await;
 
-        bt_toggle_intr(bus).await;
+        let host_ctrl = self.host_ctrl.toggle_intr();
+        bus.bp_write32(HOST_CTRL_REG_ADDR, host_ctrl).await;
 
-        buf.receive_done();
+        msg.receive_done();
     }
 
     async fn bt_has_work(&mut self, bus: &mut impl Bus) -> bool {
@@ -418,7 +457,7 @@ impl<'a> BtRunner<'a> {
         return false;
     }
 
-    pub(crate) async fn handle_irq(&mut self, bus: &mut impl Bus) {
+    pub(crate) async fn handle_irq(&mut self, bus: &mut impl Bus, buf: &mut Aligned<A4, [u8]>) {
         if self.bt_has_work(bus).await {
             loop {
                 // Check if we have data.
@@ -431,7 +470,7 @@ impl<'a> BtRunner<'a> {
                 // read header
                 let mut header = [0u8; 4];
                 let addr = self.addr + BTSDIO_OFFSET_HOST_READ_BUF + self.b2h_read_pointer;
-                bus.bp_read(addr, &mut header).await;
+                let _ = bus.bp_read(addr, &mut header, buf).await;
 
                 // calc length
                 let len = header[0] as u32 | ((header[1]) as u32) << 8 | ((header[2]) as u32) << 16;
@@ -443,30 +482,30 @@ impl<'a> BtRunner<'a> {
                 self.b2h_read_pointer = (self.b2h_read_pointer + 4) % BTSDIO_FWBUF_SIZE;
 
                 // Obtain a buf from the channel.
-                let mut buf = self.rx_chan.send().await;
+                let mut msg = self.rx_chan.send().await;
 
-                buf.buf[0] = header[3]; // hci packet type
-                let payload = &mut buf.buf[1..][..rounded_len as usize];
+                msg.buf[0] = header[3]; // hci packet type
+                let payload = &mut msg.buf[1..][..rounded_len as usize];
                 if self.b2h_read_pointer as usize + payload.len() > BTSDIO_FWBUF_SIZE as usize {
                     // wraparound
                     let n = BTSDIO_FWBUF_SIZE - self.b2h_read_pointer;
                     let addr = self.addr + BTSDIO_OFFSET_HOST_READ_BUF + self.b2h_read_pointer;
-                    bus.bp_read(addr, &mut payload[..n as usize]).await;
+                    let _ = bus.bp_read(addr, &mut payload[..n as usize], buf).await;
                     let addr = self.addr + BTSDIO_OFFSET_HOST_READ_BUF;
-                    bus.bp_read(addr, &mut payload[n as usize..]).await;
+                    let _ = bus.bp_read(addr, &mut payload[n as usize..], buf).await;
                 } else {
                     // no wraparound
                     let addr = self.addr + BTSDIO_OFFSET_HOST_READ_BUF + self.b2h_read_pointer;
-                    bus.bp_read(addr, payload).await;
+                    let _ = bus.bp_read(addr, payload, buf).await;
                 }
                 self.b2h_read_pointer = (self.b2h_read_pointer + payload.len() as u32) % BTSDIO_FWBUF_SIZE;
                 bus.bp_write32(self.addr + BTSDIO_OFFSET_BT2HOST_OUT, self.b2h_read_pointer)
                     .await;
 
-                buf.len = 1 + len as usize;
-                debug!("HCI rx: {:02x}", crate::fmt::Bytes(&buf.buf[..buf.len]));
+                msg.len = 1 + len as usize;
+                debug!("HCI rx: {:02x}", crate::fmt::Bytes(&msg.buf[..msg.len]));
 
-                buf.send_done();
+                msg.send_done();
 
                 self.bt_toggle_intr(bus).await;
             }
@@ -480,15 +519,6 @@ impl<'a> BtRunner<'a> {
 pub enum Error {
     /// I/O error.
     Io(ErrorKind),
-}
-
-impl From<FromHciBytesError> for Error {
-    fn from(e: FromHciBytesError) -> Self {
-        match e {
-            FromHciBytesError::InvalidSize => Error::Io(ErrorKind::InvalidInput),
-            FromHciBytesError::InvalidValue => Error::Io(ErrorKind::InvalidData),
-        }
-    }
 }
 
 impl core::fmt::Display for Error {
@@ -511,34 +541,53 @@ impl embedded_io_async::Error for Error {
     }
 }
 
-impl<'d> bt_hci::transport::Transport for BtDriver<'d> {
-    fn read<'a>(&self, rx: &'a mut [u8]) -> impl Future<Output = Result<ControllerToHostPacket<'a>, Self::Error>> {
+// ------------ bt-hci-transport ----------------
+
+impl From<ReadHciError<Infallible>> for Error {
+    fn from(e: ReadHciError<Infallible>) -> Self {
+        match e {
+            ReadHciError::InvalidValue => Error::Io(ErrorKind::InvalidData),
+            ReadHciError::BufferTooSmall => Error::Io(ErrorKind::InvalidInput),
+            ReadHciError::Read(e) => match e {
+                embedded_io_async::ReadExactError::UnexpectedEof => Error::Io(ErrorKind::BrokenPipe),
+                embedded_io_async::ReadExactError::Other(_) => unreachable!(),
+            },
+        }
+    }
+}
+
+impl<'d> bt_hci_transport::Transport for BtDriver<'d> {
+    fn read<'a, P: bt_hci_transport::PacketToHost<'a>>(
+        &self,
+        rx: &'a mut [u8],
+    ) -> impl Future<Output = Result<P, Self::Error>> {
         async {
             let ch = &mut *self.rx.borrow_mut();
             let buf = ch.receive().await;
-            let n = buf.len;
-            assert!(n < rx.len());
-            rx[..n].copy_from_slice(&buf.buf[..n]);
-            buf.receive_done();
+            assert!(buf.len < rx.len());
 
-            let kind = PacketKind::from_hci_bytes_complete(&rx[..1])?;
-            let (pkt, _) = ControllerToHostPacket::from_hci_bytes_with_kind(kind, &rx[1..n])?;
-            Ok(pkt)
+            let mut reader = &buf.buf[..buf.len];
+            let result =
+                bt_hci_transport::PacketKind::read(&mut reader).and_then(|kind| P::read_hci(kind, &mut reader, rx));
+            buf.receive_done();
+            result.map_err(Error::from)
         }
     }
 
-    /// Write a complete HCI packet from the tx buffer
-    fn write<T: HostToControllerPacket>(&self, val: &T) -> impl Future<Output = Result<(), Self::Error>> {
+    fn write<P: PacketToController>(&self, tx: &P) -> impl Future<Output = Result<(), Self::Error>> {
         async {
             let ch = &mut *self.tx.borrow_mut();
             let mut buf = ch.send().await;
             let buf_len = buf.buf.len();
+
             let mut slice = &mut buf.buf[..];
-            WithIndicator::new(val)
+            bt_hci_transport::WithIndicator::new(tx)
                 .write_hci(&mut slice)
                 .map_err(|_| Error::Io(ErrorKind::Other))?;
+
             buf.len = buf_len - slice.len();
             buf.send_done();
+
             Ok(())
         }
     }

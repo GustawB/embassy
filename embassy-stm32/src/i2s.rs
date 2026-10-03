@@ -2,12 +2,10 @@
 
 #![macro_use]
 
-use core::ptr;
-
 use embassy_futures::join::join;
 use stm32_metapac::spi::vals;
 
-use crate::dma::{ChannelAndRequest, ReadableRingBuffer, TransferOptions, WritableRingBuffer, ringbuffer};
+use crate::dma::{ChannelAndRequest, ReadableRingBuffer, RingBufferError, TransferOptions, WritableRingBuffer};
 use crate::gpio::{AfType, Flex, OutputType, Speed};
 use crate::mode::Async;
 use crate::pac::spi::Spi as Regs;
@@ -65,15 +63,11 @@ pub enum Error {
     Overrun,
 }
 
-impl From<ringbuffer::Error> for Error {
-    fn from(#[allow(unused)] err: ringbuffer::Error) -> Self {
-        #[cfg(feature = "defmt")]
-        {
-            if err == ringbuffer::Error::DmaUnsynced {
-                defmt::error!("Ringbuffer broken invariants detected!");
-            }
+impl From<RingBufferError> for Error {
+    fn from(e: RingBufferError) -> Self {
+        match e {
+            RingBufferError::Overrun => Self::Overrun,
         }
-        Self::Overrun
     }
 }
 
@@ -239,7 +233,7 @@ pub struct I2S<'d, W: Word> {
     mode: Mode,
     spi: Spi<'d, Async, Master>,
     #[cfg(spi_v2_i2s)]
-    regs_ext: Option<&'static Regs>,
+    regs_ext: Option<Regs>,
     _txsd: Option<Flex<'d>>,
     _rxsd: Option<Flex<'d>>,
     _ws: Option<Flex<'d>>,
@@ -258,8 +252,8 @@ impl<'d, W: Word> I2S<'d, W> {
         ck: Peri<'d, if_afio!(impl CkPin<T, A>)>,
         mck: Peri<'d, if_afio!(impl MckPin<T, A>)>,
         txdma: Peri<'d, D1>,
-        txdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>> + 'd,
+        txdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -285,8 +279,8 @@ impl<'d, W: Word> I2S<'d, W> {
         ws: Peri<'d, if_afio!(impl WsPin<T, A>)>,
         ck: Peri<'d, if_afio!(impl CkPin<T, A>)>,
         txdma: Peri<'d, D1>,
-        txdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>> + 'd,
+        txdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -313,8 +307,8 @@ impl<'d, W: Word> I2S<'d, W> {
         ck: Peri<'d, if_afio!(impl CkPin<T, A>)>,
         mck: Peri<'d, if_afio!(impl MckPin<T, A>)>,
         rxdma: Peri<'d, D1>,
-        rxdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>> + 'd,
+        rxdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -340,8 +334,8 @@ impl<'d, W: Word> I2S<'d, W> {
         ws: Peri<'d, if_afio!(impl WsPin<T, A>)>,
         ck: Peri<'d, if_afio!(impl CkPin<T, A>)>,
         rxdma: Peri<'d, D1>,
-        rxdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>> + 'd,
+        rxdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -372,10 +366,10 @@ impl<'d, W: Word> I2S<'d, W> {
         txdma: Peri<'d, D1>,
         txdma_buf: &'d mut [W],
         rxdma: Peri<'d, D2>,
-        rxdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>>
         + crate::interrupt::typelevel::Binding<D2::Interrupt, crate::dma::InterruptHandler<D2>>
         + 'd,
+        rxdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -405,10 +399,10 @@ impl<'d, W: Word> I2S<'d, W> {
         txdma: Peri<'d, D1>,
         txdma_buf: &'d mut [W],
         rxdma: Peri<'d, D2>,
-        rxdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>>
         + crate::interrupt::typelevel::Binding<D2::Interrupt, crate::dma::InterruptHandler<D2>>
         + 'd,
+        rxdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -436,10 +430,10 @@ impl<'d, W: Word> I2S<'d, W> {
         txdma: Peri<'d, D1>,
         txdma_buf: &'d mut [W],
         rxdma: Peri<'d, D2>,
-        rxdma_buf: &'d mut [W],
         _irq: impl crate::interrupt::typelevel::Binding<D1::Interrupt, crate::dma::InterruptHandler<D1>>
         + crate::interrupt::typelevel::Binding<D2::Interrupt, crate::dma::InterruptHandler<D2>>
         + 'd,
+        rxdma_buf: &'d mut [W],
         config: Config,
     ) -> Self {
         Self::new_inner(
@@ -465,7 +459,7 @@ impl<'d, W: Word> I2S<'d, W> {
             w.set_spe(false);
         });
 
-        if !ptr::eq(regs_tx, regs_rx) {
+        if regs_tx != regs_rx {
             regs_rx.cr1().modify(|w| {
                 w.set_spe(false);
             });
@@ -475,20 +469,20 @@ impl<'d, W: Word> I2S<'d, W> {
         if let Some(tx_ring_buffer) = &mut self.tx_ring_buffer {
             tx_ring_buffer.start();
 
-            set_txdmaen(*regs_tx, true);
+            set_txdmaen(regs_tx, true);
         }
         if let Some(rx_ring_buffer) = &mut self.rx_ring_buffer {
             rx_ring_buffer.start();
             // SPIv3 clears rxfifo on SPE=0
             #[cfg(not(any(spi_v4, spi_v5, spi_v6)))]
-            flush_rx_fifo(*regs_rx);
+            flush_rx_fifo(regs_rx);
 
-            set_rxdmaen(*regs_rx, true);
+            set_rxdmaen(regs_rx, true);
         }
         regs_tx.cr1().modify(|w| {
             w.set_spe(true);
         });
-        if !ptr::eq(regs_tx, regs_rx) {
+        if regs_tx != regs_rx {
             regs_rx.cr1().modify(|w| {
                 w.set_spe(true);
             });
@@ -500,7 +494,7 @@ impl<'d, W: Word> I2S<'d, W> {
         });
 
         #[cfg(any(spi_v1, spi_v2, spi_v3))]
-        if !ptr::eq(regs_tx, regs_rx) {
+        if regs_tx != regs_rx {
             regs_rx.i2scfgr().modify(|w| {
                 w.set_i2se(true);
             });
@@ -533,17 +527,17 @@ impl<'d, W: Word> I2S<'d, W> {
 
         let tx_f = async {
             if let Some(tx_ring_buffer) = &mut self.tx_ring_buffer {
-                tx_ring_buffer.stop().await;
+                tx_ring_buffer.disable_circular_and_wait().await;
 
-                set_txdmaen(*regs_tx, false);
+                set_txdmaen(regs_tx, false);
             }
         };
 
         let rx_f = async {
             if let Some(rx_ring_buffer) = &mut self.rx_ring_buffer {
-                rx_ring_buffer.stop().await;
+                rx_ring_buffer.disable_circular_and_wait().await;
 
-                set_rxdmaen(*regs_rx, false);
+                set_rxdmaen(regs_rx, false);
             }
         };
 
@@ -564,7 +558,7 @@ impl<'d, W: Word> I2S<'d, W> {
             w.set_spe(false);
         });
 
-        if !ptr::eq(regs_tx, regs_rx) {
+        if regs_tx != regs_rx {
             regs_rx.cr1().modify(|w| {
                 w.set_spe(false);
             });
@@ -594,6 +588,16 @@ impl<'d, W: Word> I2S<'d, W> {
         }
     }
 
+    /// Return the number of samples currently readable from the RX DMA ring buffer.
+    ///
+    /// Returns [`Error::Overrun`] if the DMA has lapped the reader, mirroring [`Self::read`].
+    pub fn rx_len(&mut self) -> Result<usize, Error> {
+        match &mut self.rx_ring_buffer {
+            Some(ring) => Ok(ring.len()?),
+            _ => Err(Error::NotAReceiver),
+        }
+    }
+
     /// Write data to the I2S ringbuffer.
     /// This appends the data to the buffer and returns immediately. The data will be transmitted in the background.
     /// If thfre’s no space in the buffer, this waits until there is.
@@ -614,32 +618,32 @@ impl<'d, W: Word> I2S<'d, W> {
 
     /// Write data directly to the raw I2S ringbuffer.
     /// This can be used to fill the buffer before starting the DMA transfer.
-    pub async fn write_immediate(&mut self, data: &[W]) -> Result<(usize, usize), Error> {
+    pub fn write_immediate(&mut self, data: &[W]) -> Result<(usize, usize), Error> {
         match &mut self.tx_ring_buffer {
             Some(ring) => Ok(ring.write_immediate(data)?),
-            _ => return Err(Error::NotATransmitter),
+            _ => Err(Error::NotATransmitter),
         }
     }
 
-    fn regs_tx(&self) -> &'static Regs {
-        &self.spi.info.regs
+    fn regs_tx(&self) -> Regs {
+        self.spi.info.regs
     }
 
-    fn regs_rx(&self) -> &'static Regs {
+    fn regs_rx(&self) -> Regs {
         #[cfg(spi_v2_i2s)]
         {
-            self.regs_ext.unwrap_or(&self.spi.info.regs)
+            self.regs_ext.unwrap_or(self.spi.info.regs)
         }
 
         #[cfg(not(spi_v2_i2s))]
         {
-            &self.spi.info.regs
+            self.spi.info.regs
         }
     }
 
     fn new_inner<T: Instance, #[cfg(afio)] A>(
         peri: Peri<'d, T>,
-        #[cfg(spi_v2_i2s)] regs_ext: Option<&'static Regs>,
+        #[cfg(spi_v2_i2s)] regs_ext: Option<Regs>,
         txsd: Option<Flex<'d>>,
         rxsd: Option<Flex<'d>>,
         ws: Peri<'d, if_afio!(impl WsPin<T, A>)>,
@@ -785,7 +789,7 @@ impl<'d, W: Word> I2S<'d, W> {
         let regs_rx = {
             #[cfg(spi_v2_i2s)]
             {
-                regs_ext.unwrap_or(&regs)
+                regs_ext.unwrap_or(regs)
             }
 
             #[cfg(not(spi_v2_i2s))]
@@ -799,15 +803,16 @@ impl<'d, W: Word> I2S<'d, W> {
             spi,
             #[cfg(spi_v2_i2s)]
             regs_ext: regs_ext,
-            _txsd: txsd.map(|w| w.into()),
-            _rxsd: rxsd.map(|w| w.into()),
+            _txsd: txsd.map(|w| w),
+            _rxsd: rxsd.map(|w| w),
             _ws: new_pin!(ws, AfType::output(OutputType::PushPull, config.gpio_speed)),
             _ck: new_pin!(ck, AfType::output(OutputType::PushPull, config.gpio_speed)),
-            _mck: mck.map(|w| w.into()),
-            tx_ring_buffer: txdma
-                .map(|(ch, buf)| unsafe { WritableRingBuffer::new(ch.channel, ch.request, regs.tx_ptr(), buf, opts) }),
-            rx_ring_buffer: rxdma.map(|(ch, buf)| {
-                let mut rb = unsafe { ReadableRingBuffer::new(ch.channel, ch.request, regs_rx.rx_ptr(), buf, opts) };
+            _mck: mck.map(|w| w),
+            tx_ring_buffer: txdma.map(|(ch, buf)| unsafe {
+                WritableRingBuffer::new(ch.channel, ch.request, regs.tx_ptr() as *mut W, buf, opts)
+            }),
+            rx_ring_buffer: rxdma.map(|(ch, buf)| unsafe {
+                let mut rb = ReadableRingBuffer::new(ch.channel, ch.request, regs_rx.rx_ptr() as *mut W, buf, opts);
                 rb.set_alignment(frame_words);
                 rb
             }),
@@ -923,15 +928,15 @@ fn reset_incompatible_bitfields<T: Instance>() {
 /// Full-Duplex I2s Instance
 pub trait I2sSExtInstance: spi::Instance {
     /// Ext regs
-    fn regs_ext() -> &'static Regs;
+    fn regs_ext() -> Regs;
 }
 
 #[allow(unused_macros)]
 macro_rules! impl_i2_ext_instance {
     ($spi:ident, $i2s:ident) => {
         impl crate::i2s::I2sSExtInstance for crate::peripherals::$spi {
-            fn regs_ext() -> &'static crate::pac::spi::Spi {
-                &crate::pac::$i2s
+            fn regs_ext() -> crate::pac::spi::Spi {
+                crate::pac::$i2s
             }
         }
     };

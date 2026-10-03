@@ -4,6 +4,7 @@
 use core::sync::atomic::{AtomicU8, Ordering};
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::usb::Driver;
@@ -14,8 +15,8 @@ use embassy_usb::class::hid::{
     HidBootProtocol, HidProtocolMode, HidSubclass, HidWriter, ReportId, RequestHandler, State,
 };
 use embassy_usb::control::OutResponse;
+use panic_probe as _;
 use usbd_hid::descriptor::{MouseReport, SerializedDescriptor};
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
     USB_FS => usb::InterruptHandler<peripherals::USB>;
@@ -45,7 +46,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     // Create the driver, from the HAL.
-    let driver = Driver::new(p.USB, Irqs, p.PA12, p.PA11);
+    let driver = Driver::new(p.USB, p.PA12, p.PA11, Irqs);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);

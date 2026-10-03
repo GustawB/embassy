@@ -2,7 +2,8 @@
 #![no_std]
 #![no_main]
 
-use {defmt_rtt as _, panic_probe as _};
+use defmt_rtt as _;
+use panic_probe as _;
 
 #[rtic::app(device = embassy_stm32, peripherals = true)]
 mod app {
@@ -95,7 +96,7 @@ mod app {
         // clear the interrupt flag
         button.clear_pending();
 
-        let l = button.get_level();
+        let l = button.level();
         info!("button3 triggered, {}", l);
 
         ctx.shared.led2.lock(|led| led.toggle());

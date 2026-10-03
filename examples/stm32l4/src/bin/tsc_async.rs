@@ -32,11 +32,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::tsc::{self, *};
 use embassy_stm32::{bind_interrupts, peripherals};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     TSC => InterruptHandler<embassy_stm32::peripherals::TSC>;
@@ -73,7 +74,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
         max_count_interrupt: false,
     };
 
-    let mut touch_controller = tsc::Tsc::new_async(context.TSC, pin_groups, tsc_conf, Irqs).unwrap();
+    let mut touch_controller = tsc::Tsc::new_async(context.TSC, Irqs, pin_groups, tsc_conf).unwrap();
 
     // Check if TSC is ready
     if touch_controller.get_state() != State::Ready {

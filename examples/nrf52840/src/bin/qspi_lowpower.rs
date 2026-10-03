@@ -4,11 +4,12 @@
 use core::mem;
 
 use defmt::{info, unwrap};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::qspi::Frequency;
 use embassy_nrf::{bind_interrupts, peripherals, qspi};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 // Workaround for alignment requirements.
 // Nicer API will probably come in the future.
@@ -38,13 +39,13 @@ async fn main(_p: Spawner) {
 
         let mut q = qspi::Qspi::new(
             p.QSPI.reborrow(),
-            Irqs,
             p.P0_19.reborrow(),
             p.P0_17.reborrow(),
             p.P0_20.reborrow(),
             p.P0_21.reborrow(),
             p.P0_22.reborrow(),
             p.P0_23.reborrow(),
+            Irqs,
             config,
         );
 

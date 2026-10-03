@@ -7,7 +7,7 @@ use core::pin::Pin;
 use core::task::{Context, Poll};
 
 use super::low_level::{
-    CountingMode, FilterValue, InputCaptureMode, InputTISelection, SlaveMode, Timer, TriggerSource as Ts,
+    CountingMode, FilterValue, InputCaptureMode, InputCaptureSelection, SlaveMode, Timer, TriggerSource as Ts,
 };
 use super::{CaptureCompareInterruptHandler, Channel, ExternalTriggerPin, GeneralInstance4Channel, TimerPin};
 pub use super::{Ch1, Ch2};
@@ -15,6 +15,7 @@ use crate::Peri;
 use crate::gpio::{AfType, Flex, Pull};
 use crate::interrupt::typelevel::{Binding, Interrupt};
 use crate::pac::timer::vals::Etp;
+use crate::rcc::WakeGuard;
 use crate::time::Hertz;
 use crate::timer::TimerChannel;
 
@@ -88,6 +89,7 @@ impl<'d, T: GeneralInstance4Channel> TriggerPin<'d, T, Ext> {
 pub struct OnePulse<'d, T: GeneralInstance4Channel> {
     inner: Timer<'d, T>,
     _pin: Flex<'d>,
+    _wake_guard: WakeGuard,
 }
 
 impl<'d, T: GeneralInstance4Channel> OnePulse<'d, T> {
@@ -107,11 +109,12 @@ impl<'d, T: GeneralInstance4Channel> OnePulse<'d, T> {
         let mut this = Self {
             inner: Timer::new(tim),
             _pin: pin.pin,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_trigger_source(Ts::Ti1fEd);
         this.inner
-            .set_input_ti_selection(Channel::Ch1, InputTISelection::Normal);
+            .set_input_capture_selection(Channel::Ch1, InputCaptureSelection::Normal);
         this.inner.set_input_capture_filter(Channel::Ch1, FilterValue::NoFilter);
         this.new_inner(freq, pulse_end, counting_mode);
 
@@ -134,11 +137,12 @@ impl<'d, T: GeneralInstance4Channel> OnePulse<'d, T> {
         let mut this = Self {
             inner: Timer::new(tim),
             _pin: _pin.pin,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_trigger_source(Ts::Ti1fp1);
         this.inner
-            .set_input_ti_selection(Channel::Ch1, InputTISelection::Normal);
+            .set_input_capture_selection(Channel::Ch1, InputCaptureSelection::Normal);
         this.inner.set_input_capture_filter(Channel::Ch1, FilterValue::NoFilter);
         this.inner.set_input_capture_mode(Channel::Ch1, capture_mode);
         this.new_inner(freq, pulse_end, counting_mode);
@@ -162,11 +166,12 @@ impl<'d, T: GeneralInstance4Channel> OnePulse<'d, T> {
         let mut this = Self {
             inner: Timer::new(tim),
             _pin: _pin.pin,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.set_trigger_source(Ts::Ti2fp2);
         this.inner
-            .set_input_ti_selection(Channel::Ch2, InputTISelection::Normal);
+            .set_input_capture_selection(Channel::Ch2, InputCaptureSelection::Normal);
         this.inner.set_input_capture_filter(Channel::Ch2, FilterValue::NoFilter);
         this.inner.set_input_capture_mode(Channel::Ch2, capture_mode);
         this.new_inner(freq, pulse_end, counting_mode);
@@ -189,6 +194,7 @@ impl<'d, T: GeneralInstance4Channel> OnePulse<'d, T> {
         let mut this = Self {
             inner: Timer::new(tim),
             _pin: _pin.pin,
+            _wake_guard: T::RCC_INFO.wake_guard(),
         };
 
         this.inner.regs_gp16().smcr().modify(|r| {

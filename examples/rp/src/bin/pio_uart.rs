@@ -11,10 +11,11 @@
 #![allow(async_fn_in_trait)]
 
 use defmt::{info, panic, trace};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::{join, join3};
 use embassy_rp::peripherals::{PIO0, USB};
-use embassy_rp::pio_programs::uart::{PioUartRx, PioUartRxProgram, PioUartTx, PioUartTxProgram};
+use embassy_rp::pio_programs::uart::{PioUart, PioUartRx, PioUartTx};
 use embassy_rp::usb::{Driver, Instance, InterruptHandler};
 use embassy_rp::{bind_interrupts, pio};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -22,8 +23,7 @@ use embassy_sync::pipe::Pipe;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, Receiver, Sender, State};
 use embassy_usb::driver::EndpointError;
 use embassy_usb::{Builder, Config};
-use embedded_io_async::{Read, Write};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 //use crate::uart::PioUart;
 
@@ -32,7 +32,7 @@ bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
 });
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
     info!("Hello there!");
 
@@ -80,11 +80,9 @@ async fn main(_spawner: Spawner) {
         mut common, sm0, sm1, ..
     } = pio::Pio::new(p.PIO0, Irqs);
 
-    let tx_program = PioUartTxProgram::new(&mut common);
-    let mut uart_tx = PioUartTx::new(9600, &mut common, sm0, p.PIN_4, &tx_program);
+    let uart_pio = PioUart::new(9600, &mut common, sm0, sm1, p.PIN_4, p.PIN_5);
 
-    let rx_program = PioUartRxProgram::new(&mut common);
-    let mut uart_rx = PioUartRx::new(9600, &mut common, sm1, p.PIN_5, &rx_program);
+    let (mut uart_tx, mut uart_rx) = uart_pio.split();
 
     // Pipe setup
     let mut usb_pipe: Pipe<NoopRawMutex, 20> = Pipe::new();
@@ -167,13 +165,9 @@ async fn uart_read<PIO: pio::Instance, const SM: usize>(
 ) -> ! {
     let mut buf = [0; 64];
     loop {
-        let n = uart_rx.read(&mut buf).await.expect("UART read error");
-        if n == 0 {
-            continue;
-        }
-        let data = &buf[..n];
+        uart_rx.read(&mut buf).await;
         trace!("UART IN: {:x}", buf);
-        (*usb_pipe_writer).write(data).await;
+        (*usb_pipe_writer).write(&buf).await;
     }
 }
 
@@ -187,6 +181,6 @@ async fn uart_write<PIO: pio::Instance, const SM: usize>(
         let n = (*uart_pipe_reader).read(&mut buf).await;
         let data = &buf[..n];
         trace!("UART OUT: {:x}", data);
-        let _ = uart_tx.write(&data).await;
+        uart_tx.write(data).await;
     }
 }

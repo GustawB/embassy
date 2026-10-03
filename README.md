@@ -24,6 +24,7 @@ Rust's [async/await](https://rust-lang.github.io/async-book/) allows for unprece
     - [ch32-hal](https://github.com/ch32-rs/ch32-hal), for the WCH 32-bit RISC-V(CH32V) series of chips.
     - [mpfs-hal](https://github.com/AlexCharlton/mpfs-hal), for the Microchip PolarFire SoC.
     - [py32-hal](https://github.com/py32-rs/py32-hal), for the Puya Semiconductor PY32 series of microcontrollers.
+    - [ra-hal](https://git.sr.ht/~az1/ra-hal), for the Renesas RA family of microcontrollers.
 
 - **Time that Just Works** -
   No more messing with hardware timers. [embassy_time](https://docs.embassy.dev/embassy-time) provides Instant, Duration, and Timer types that are globally available and never overflow.
@@ -36,6 +37,7 @@ Rust's [async/await](https://rust-lang.github.io/async-book/) allows for unprece
 
 - **Networking** -
   The [embassy-net](https://docs.embassy.dev/embassy-net/) network stack implements extensive networking functionality, including Ethernet, IP, TCP, UDP, ICMP, and DHCP. Async drastically simplifies managing timeouts and serving multiple connections concurrently.
+  [embassy-ptp-driver](https://docs.embassy.dev/embassy-ptp-driver/) provides a network-stack-independent interface for reading and adjusting PTP hardware clocks.
 
 - **Bluetooth**
     - The [trouble](https://github.com/embassy-rs/trouble) crate provides a Bluetooth Low Energy 4.x and 5.x Host that runs on any microcontroller implementing the [bt-hci](https://github.com/embassy-rs/bt-hci) traits (currently
@@ -105,7 +107,7 @@ Examples are found in the
 * `examples/nrf5340` run on the `nrf5340-dk` board (PCA10095).
 * `examples/stm32xx` for the various STM32 families.
 * `examples/rp` are for the RP2040 and RP235x chips.
-* `examples/mcxa` run on the `FRDM-MCXA266` board.
+* `examples/mcxa2xx` run on the `FRDM-MCXA266` board.
 * `examples/std` are designed to run locally on your PC.
 
 ### Running examples
@@ -142,7 +144,7 @@ please refer to the `.vscode/settings.json` file's `rust-analyzer.linkedProjects
 
 ## Minimum supported Rust version (MSRV)
 
-Embassy is guaranteed to compile on stable Rust 1.75 and up. It *might*
+Embassy is guaranteed to compile on latest stable Rust. It *might*
 compile with older versions, but that may change in any new patch release.
 
 ## Why the name?

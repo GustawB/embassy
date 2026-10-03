@@ -2,11 +2,12 @@
 #![no_main]
 
 use defmt::{Format, error, info};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::ucpd::{self, CcPhy, CcPull, CcSel, CcVState, Ucpd};
 use embassy_stm32::{Config, bind_interrupts, dma, peripherals};
 use embassy_time::{Duration, with_timeout};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     UCPD1 => ucpd::InterruptHandler<peripherals::UCPD1>;
@@ -57,7 +58,7 @@ async fn main(_spawner: Spawner) {
 
     info!("Hello World!");
 
-    let mut ucpd = Ucpd::new(p.UCPD1, Irqs {}, p.PB6, p.PB4, Default::default());
+    let mut ucpd = Ucpd::new(p.UCPD1, p.PB6, p.PB4, Irqs {}, Default::default());
     ucpd.cc_phy().set_pull(CcPull::Sink);
 
     info!("Waiting for USB connection...");

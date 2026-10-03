@@ -18,55 +18,35 @@
 #![no_std]
 #![no_main]
 
-use core::cell::RefCell;
-
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::aes::{self, Aes};
-use embassy_stm32::mode::Blocking;
-use embassy_stm32::peripherals::{AES, PKA, RNG};
-use embassy_stm32::pka::{self, Pka};
-use embassy_stm32::rcc::{
-    AHB5Prescaler, AHBPrescaler, APBPrescaler, Hse, HsePrescaler, LsConfig, LseConfig, LseDrive, LseMode, PllDiv,
-    PllMul, PllPreDiv, PllSource, RtcClockSource, Sysclk, VoltageScale, mux,
+use embassy_stm32::{Config, bind_interrupts, rcc};
+use embassy_stm32_wpan::bluetooth::HCI;
+use embassy_stm32_wpan::bluetooth::gap::types::OwnAddressType;
+use embassy_stm32_wpan::bluetooth::gap::{AdvData, AdvParams, AdvType, GapEvent};
+use embassy_stm32_wpan::bluetooth::gap_init::{AddressType, GapInitParams};
+use embassy_stm32_wpan::bluetooth::gatt::{
+    CHAR_VALUE_HANDLE_OFFSET, CccdValue, CharProperties, CharacteristicHandle, GattEventMask, SecurityPermissions,
+    ServiceHandle, ServiceType, Uuid, is_cccd_handle, is_value_handle,
 };
-use embassy_stm32::rng::{self, Rng};
-use embassy_stm32::time::Hertz;
-use embassy_stm32::{Config, bind_interrupts, interrupt};
-use embassy_stm32_wpan::gap::{AdvData, AdvParams, AdvType, GapEvent};
-use embassy_stm32_wpan::gatt::{
-    CHAR_VALUE_HANDLE_OFFSET, CccdValue, CharProperties, CharacteristicHandle, GattEventMask, GattServer,
-    SecurityPermissions, ServiceHandle, ServiceType, Uuid, is_cccd_handle, is_value_handle,
-};
-use embassy_stm32_wpan::hci::event::EventParams;
-use embassy_stm32_wpan::{Ble, ble_runner, run_radio_high_isr, run_radio_sw_low_isr};
-use embassy_sync::blocking_mutex::Mutex;
-use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
-use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
+use embassy_stm32_wpan::{HighInterruptHandler, LowInterruptHandler, Platform, new_platform};
+use panic_probe as _;
+use stm32wb_hci::Event;
+use stm32wb_hci::vendor::event::{AttExchangeMtuResponse, VendorEvent};
+
+// ---- Test configuration ----
+const ADDR_TYPE: OwnAddressType = OwnAddressType::Random;
 
 bind_interrupts!(struct Irqs {
-    RNG => rng::InterruptHandler<RNG>;
-    AES => aes::InterruptHandler<AES>;
-    PKA => pka::InterruptHandler<PKA>;
+    RADIO => HighInterruptHandler;
+    HASH => LowInterruptHandler;
 });
-
-// RADIO interrupt handler - required for BLE stack operation
-#[interrupt]
-unsafe fn RADIO() {
-    unsafe { run_radio_high_isr() };
-}
-
-// HASH interrupt handler - used as software low-priority interrupt for BLE
-#[interrupt]
-unsafe fn HASH() {
-    unsafe { run_radio_sw_low_isr() };
-}
 
 /// BLE runner task - drives the BLE stack sequencer
 #[embassy_executor::task]
-async fn ble_runner_task() {
-    ble_runner().await
+async fn ble_runner_task(platform: &'static Platform) {
+    platform.run_ble().await
 }
 
 /// Custom service UUID (use your own for production)
@@ -86,81 +66,35 @@ struct AppState {
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let mut config = Config::default();
+    config.rcc = rcc::Config::new_wpan();
 
-    // Enable HSE (32 MHz external crystal) - REQUIRED for BLE radio
-    config.rcc.hse = Some(Hse {
-        prescaler: HsePrescaler::Div1,
-    });
-
-    // Enable LSE (32.768 kHz external crystal) - REQUIRED for BLE radio sleep timer
-    config.rcc.ls = LsConfig {
-        rtc: RtcClockSource::Lse,
-        lsi: false,
-        lse: Some(LseConfig {
-            frequency: Hertz(32_768),
-            mode: LseMode::Oscillator(LseDrive::MediumLow),
-            peripherals_clocked: true,
-        }),
-    };
-
-    // Configure PLL1 (required on WBA)
-    config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
-        source: PllSource::Hsi,
-        prediv: PllPreDiv::Div1,
-        mul: PllMul::Mul30,
-        divr: Some(PllDiv::Div5),
-        divq: None,
-        divp: Some(PllDiv::Div30),
-        frac: Some(0),
-    });
-
-    config.rcc.ahb_pre = AHBPrescaler::Div1;
-    config.rcc.apb1_pre = APBPrescaler::Div1;
-    config.rcc.apb2_pre = APBPrescaler::Div1;
-    config.rcc.apb7_pre = APBPrescaler::Div1;
-    config.rcc.ahb5_pre = AHB5Prescaler::Div4;
-    config.rcc.voltage_scale = VoltageScale::Range1;
-    config.rcc.sys = Sysclk::Pll1R;
-    config.rcc.mux.rngsel = mux::Rngsel::Hsi;
-
-    let p = embassy_stm32::init(config);
-
-    // Apply HSE trimming for accurate radio frequency (matching ST's Config_HSE)
-    // and configure radio sleep timer to use LSE
-    {
-        use embassy_stm32::pac::RCC;
-        use embassy_stm32::pac::rcc::vals::Radiostsel;
-        RCC.ecscr1().modify(|w| w.set_hsetrim(0x0C));
-        RCC.bdcr().modify(|w| w.set_radiostsel(Radiostsel::Lse));
-    }
+    let _p = embassy_stm32::init(config);
 
     info!("Embassy STM32WBA6 GATT Server Example");
 
     // Initialize hardware peripherals required by BLE stack
-    static RNG_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Rng<'static, RNG>>>> = StaticCell::new();
-    let rng = RNG_INST.init(Mutex::new(RefCell::new(Rng::new(p.RNG, Irqs))));
+    let (platform, runtime) = new_platform!(8);
 
-    static AES_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Aes<'static, AES, Blocking>>>> =
-        StaticCell::new();
-    let aes = AES_INST.init(Mutex::new(RefCell::new(Aes::new_blocking(p.AES, Irqs))));
-
-    static PKA_INST: StaticCell<Mutex<CriticalSectionRawMutex, RefCell<Pka<'static, PKA>>>> = StaticCell::new();
-    let pka = PKA_INST.init(Mutex::new(RefCell::new(Pka::new_blocking(p.PKA, Irqs))));
-
-    info!("Hardware peripherals initialized (RNG, AES, PKA)");
-
-    // Initialize BLE stack
-    let mut ble = Ble::new(rng, aes, pka);
-    ble.init().expect("BLE initialization failed");
-    info!("BLE stack initialized");
+    info!("BLE platform initialized");
 
     // Spawn the BLE runner task (required for proper BLE operation)
-    spawner.spawn(ble_runner_task().expect("Failed to spawn BLE runner"));
-    embassy_futures::yield_now().await;
+    spawner.spawn(ble_runner_task(platform).expect("Failed to spawn BLE runner"));
+
+    let mut ble = match ADDR_TYPE {
+        OwnAddressType::Public => {
+            let gap_params = GapInitParams {
+                bd_addr: [0x01, 0x00, 0x00, 0xE1, 0x80, 0x00],
+                address_type: AddressType::Public,
+                ..GapInitParams::default()
+            };
+            HCI::new_with_gap_params(platform, runtime, Irqs, gap_params).await
+        }
+        _ => HCI::new(platform, runtime, Irqs).await,
+    }
+    .expect("BLE initialization failed");
 
     // Initialize GATT server
-    let mut gatt = GattServer::new();
-    gatt.init().expect("GATT initialization failed");
+    let mut gatt = ble.gatt_server();
 
     // Create custom service
     let service_uuid = Uuid::from_u16(CUSTOM_SERVICE_UUID);
@@ -217,14 +151,14 @@ async fn main(spawner: Spawner) {
         interval_min: 0x0050,
         interval_max: 0x0050,
         adv_type: AdvType::ConnectableUndirected,
+        own_addr_type: ADDR_TYPE,
         ..AdvParams::default()
     };
 
     // Start advertising
     {
-        let mut advertiser = ble.advertiser();
-        advertiser
-            .start(adv_params.clone(), adv_data.clone(), None)
+        ble.start_advertising(adv_params.clone(), adv_data.clone(), None)
+            .await
             .expect("Failed to start advertising");
     }
 
@@ -244,13 +178,19 @@ async fn main(spawner: Spawner) {
                     state.notifications_enabled = false; // Reset on new connection
                 }
                 GapEvent::Disconnected { handle, reason } => {
-                    info!("Disconnected: handle 0x{:04X}, reason 0x{:02X}", handle.0, reason);
+                    info!(
+                        "Disconnected: handle 0x{:04X}, reason 0x{:02X} ({})",
+                        handle.0,
+                        reason.as_u8(),
+                        Display2Format(&reason)
+                    );
                     state.current_conn_handle = None;
                     state.notifications_enabled = false;
 
                     // Restart advertising
-                    let mut advertiser = ble.advertiser();
-                    let _ = advertiser.start(adv_params.clone(), adv_data.clone(), None);
+                    ble.start_advertising(adv_params.clone(), adv_data.clone(), None)
+                        .await
+                        .expect("Failed to start advertising");
                     info!("Advertising restarted");
                 }
                 _ => {}
@@ -258,23 +198,18 @@ async fn main(spawner: Spawner) {
         }
 
         // Process GATT events
-        match &event.params {
-            EventParams::GattAttributeModified {
-                conn_handle,
-                attr_handle,
-                data,
-                ..
-            } => {
+        match &event {
+            Event::Vendor(VendorEvent::GattAttributeModified(attribute)) => {
                 info!(
                     "Attribute modified: conn 0x{:04X}, attr 0x{:04X}, {} bytes",
-                    conn_handle.0,
-                    attr_handle,
-                    data.len()
+                    attribute.conn_handle,
+                    attribute.attr_handle,
+                    attribute.data().len(),
                 );
 
                 // Check if this is a CCCD write (notification enable/disable)
-                if is_cccd_handle(state.data_char_handle.0, *attr_handle) {
-                    let cccd = CccdValue::from_bytes(data);
+                if is_cccd_handle(state.data_char_handle.0, attribute.attr_handle.0) {
+                    let cccd = CccdValue::from_bytes(attribute.data());
                     state.notifications_enabled = cccd.notifications;
                     info!(
                         "CCCD updated: notifications={}, indications={}",
@@ -288,8 +223,8 @@ async fn main(spawner: Spawner) {
                     }
                 }
                 // Check if this is a characteristic value write
-                else if is_value_handle(state.data_char_handle.0, *attr_handle) {
-                    info!("Characteristic value written: {:?}", data.as_slice());
+                else if is_value_handle(state.data_char_handle.0, attribute.attr_handle.0) {
+                    info!("Characteristic value written: {:?}", attribute.data());
 
                     // Echo the data back as a notification if enabled
                     if state.notifications_enabled {
@@ -297,7 +232,7 @@ async fn main(spawner: Spawner) {
                             // Increment counter and append to response
                             state.counter = state.counter.wrapping_add(1);
                             let mut response: heapless::Vec<u8, 33> = heapless::Vec::new();
-                            let _ = response.extend_from_slice(data);
+                            let _ = response.extend_from_slice(attribute.data());
                             let _ = response.push(state.counter);
 
                             match gatt.notify(conn, state.service_handle, state.data_char_handle, &response) {
@@ -313,24 +248,18 @@ async fn main(spawner: Spawner) {
                 }
             }
 
-            EventParams::GattNotificationComplete {
-                conn_handle,
-                attr_handle,
-            } => {
-                info!(
-                    "Notification complete: conn 0x{:04X}, attr 0x{:04X}",
-                    conn_handle.0, attr_handle
-                );
+            Event::Vendor(VendorEvent::GattNotificationComplete(attr_handle)) => {
+                info!("Notification complete: conn attr 0x{:04X}", attr_handle);
             }
 
-            EventParams::AttExchangeMtuResponse {
+            Event::Vendor(VendorEvent::AttExchangeMtuResponse(AttExchangeMtuResponse {
                 conn_handle,
-                server_mtu,
-            } => {
-                info!("MTU exchanged: conn 0x{:04X}, MTU={}", conn_handle.0, server_mtu);
+                server_rx_mtu,
+            })) => {
+                info!("MTU exchanged: conn 0x{:04X}, MTU={}", conn_handle.0, server_rx_mtu);
                 // Update connection MTU
                 if let Some(conn) = ble.get_connection_mut(*conn_handle) {
-                    conn.update_mtu(*server_mtu);
+                    conn.update_mtu(*server_rx_mtu as u16);
                 }
             }
 

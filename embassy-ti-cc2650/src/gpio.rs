@@ -8,10 +8,10 @@ use embassy_hal_internal::PeripheralType;
 use embassy_hal_internal::impl_peripheral;
 use paste::paste;
 
-// 1073881088 is the start address of registers for GPIO.
+// 0x40022000 is the start address of registers for GPIO.
 // cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Gpio, gpio, 1073881088);
+// address from said crate.
+define_peri!(Gpio, gpio, 0x40022000);
 
 /// Pull setting for an input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

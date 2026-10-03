@@ -1,4 +1,5 @@
 //! LTDC - LCD-TFT Display Controller
+//!
 //! See ST application note AN4861: Introduction to LCD-TFT display controller (LTDC) on STM32 MCUs for high level details
 //! This module was tested against the stm32h735g-dk using the RM0468 ST reference manual for detailed register information
 
@@ -145,7 +146,7 @@ pub struct Ltdc<'d, T: Instance, I: Interface = Rgb888> {
 
 /// LTDC interrupt handler.
 pub struct InterruptHandler<T: Instance> {
-    _phantom: PhantomData<T>,
+    _marker: PhantomData<T>,
 }
 
 /// 24 bit color
@@ -268,7 +269,6 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb565> {
     /// Create a new RGB565 LTDC instance
     pub fn new_with_pins(
         peri: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         clk: Peri<'d, impl ClkPin<T>>,
         hsync: Peri<'d, impl HsyncPin<T>>,
         vsync: Peri<'d, impl VsyncPin<T>>,
@@ -289,6 +289,7 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb565> {
         r5: Peri<'d, impl R5Pin<T>>,
         r6: Peri<'d, impl R6Pin<T>>,
         r7: Peri<'d, impl R7Pin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         Self::setup_clocks();
         let pins = [
@@ -326,7 +327,6 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb666> {
     /// Create a new RGB666 LTDC instance
     pub fn new_with_pins(
         peri: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         clk: Peri<'d, impl ClkPin<T>>,
         hsync: Peri<'d, impl HsyncPin<T>>,
         vsync: Peri<'d, impl VsyncPin<T>>,
@@ -349,6 +349,7 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb666> {
         r5: Peri<'d, impl R5Pin<T>>,
         r6: Peri<'d, impl R6Pin<T>>,
         r7: Peri<'d, impl R7Pin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         Self::setup_clocks();
         let pins = [
@@ -389,7 +390,6 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb888> {
     #[allow(clippy::too_many_arguments)]
     pub fn new_with_pins(
         peri: Peri<'d, T>,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
         clk: Peri<'d, impl ClkPin<T>>,
         hsync: Peri<'d, impl HsyncPin<T>>,
         vsync: Peri<'d, impl VsyncPin<T>>,
@@ -418,6 +418,7 @@ impl<'d, T: Instance> Ltdc<'d, T, Rgb888> {
         r5: Peri<'d, impl R5Pin<T>>,
         r6: Peri<'d, impl R6Pin<T>>,
         r7: Peri<'d, impl R7Pin<T>>,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'd,
     ) -> Self {
         Self::setup_clocks();
         let pins = [

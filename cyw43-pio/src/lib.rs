@@ -10,6 +10,7 @@ use embassy_rp::Peri;
 use embassy_rp::clocks::clk_sys_freq;
 use embassy_rp::dma::Channel;
 use embassy_rp::gpio::{Drive, Level, Output, Pull, SlewRate};
+use embassy_rp::mode::Async;
 use embassy_rp::pio::program::pio_asm;
 use embassy_rp::pio::{Common, Config, Direction, Instance, Irq, PioPin, ShiftDirection, StateMachine};
 use fixed::FixedU32;
@@ -20,8 +21,10 @@ pub struct PioSpi<'d, PIO: Instance, const SM: usize> {
     cs: Output<'d>,
     sm: StateMachine<'d, PIO, SM>,
     irq: Irq<'d, PIO, 0>,
-    dma: Channel<'d>,
+    dma_tx: Channel<'d, Async>,
+    dma_rx: Channel<'d, Async>,
     wrap_target: u8,
+    pin_io: embassy_rp::pio::Pin<'d, PIO>,
 }
 
 /// Clock divider used for most applications
@@ -57,7 +60,8 @@ where
         cs: Output<'d>,
         dio: Peri<'d, impl PioPin>,
         clk: Peri<'d, impl PioPin>,
-        dma: Channel<'d>,
+        dma_tx: Channel<'d, Async>,
+        dma_rx: Channel<'d, Async>,
     ) -> Self {
         let effective_pio_frequency = (clk_sys_freq() as f32 / clock_divider.to_num::<f32>()) as u32;
 
@@ -185,7 +189,6 @@ where
         let mut pin_io: embassy_rp::pio::Pin<PIO> = common.make_pio_pin(dio);
         pin_io.set_pull(Pull::None);
         pin_io.set_schmitt(true);
-        pin_io.set_input_sync_bypass(true);
         pin_io.set_drive_strength(Drive::_12mA);
         pin_io.set_slew_rate(SlewRate::Fast);
 
@@ -205,6 +208,7 @@ where
         cfg.shift_in.auto_fill = true;
         //cfg.shift_in.threshold = 32;
         cfg.clock_divider = clock_divider;
+        cfg.set_input_sync_bypass(&[&pin_io]);
 
         sm.set_config(&cfg);
 
@@ -215,8 +219,10 @@ where
             cs,
             sm,
             irq,
-            dma,
+            dma_tx,
+            dma_rx,
             wrap_target: loaded_program.wrap.target,
+            pin_io,
         }
     }
 
@@ -238,13 +244,11 @@ where
 
         self.sm.set_enable(true);
 
-        self.sm.tx().dma_push(&mut self.dma, write, false).await;
-
         let mut status = 0;
-        self.sm
-            .rx()
-            .dma_pull(&mut self.dma, slice::from_mut(&mut status), false)
-            .await;
+        let (rx, tx) = self.sm.rx_tx();
+        let rx_fut = rx.dma_pull(&mut self.dma_rx, slice::from_mut(&mut status), false);
+        let tx_fut = tx.dma_push(&mut self.dma_tx, write, false);
+        embassy_futures::join::join(tx_fut, rx_fut).await;
         status
     }
 
@@ -267,16 +271,17 @@ where
             self.sm.exec_jmp(self.wrap_target);
         }
 
-        // self.cs.set_low();
         self.sm.set_enable(true);
 
-        self.sm.tx().dma_push(&mut self.dma, slice::from_ref(&cmd), false).await;
-        self.sm.rx().dma_pull(&mut self.dma, read, false).await;
+        let (rx, tx) = self.sm.rx_tx();
+        let rx_fut = rx.dma_pull(&mut self.dma_rx, read, false);
+        let tx_fut = tx.dma_push(&mut self.dma_tx, slice::from_ref(&cmd), false);
+        embassy_futures::join::join(tx_fut, rx_fut).await;
 
         let mut status = 0;
         self.sm
             .rx()
-            .dma_pull(&mut self.dma, slice::from_mut(&mut status), false)
+            .dma_pull(&mut self.dma_rx, slice::from_mut(&mut status), false)
             .await;
 
         #[cfg(feature = "defmt")]
@@ -302,6 +307,15 @@ where
         let status = self.cmd_read(write, read).await;
         self.cs.set_high();
         status
+    }
+
+    async fn prepare_reset(&mut self) {
+        // As per pico-sdk's cyw43_spi_gpio_setup(). Must hold data pin low across the
+        // WL_REG_ON pulse.
+        self.sm.set_enable(false);
+        self.sm.set_pin_dirs(Direction::Out, &[&self.pin_io]);
+        self.sm.set_pins(Level::Low, &[&self.pin_io]);
+        self.cs.set_high();
     }
 
     async fn wait_for_event(&mut self) {

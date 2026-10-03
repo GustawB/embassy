@@ -47,7 +47,7 @@ async fn async_main(_spawner: Spawner) {
         use embassy_stm32::mode::Blocking;
         use embassy_stm32::usart::Uart;
         let config = embassy_stm32::usart::Config::default();
-        let uart = Uart::new_blocking(p.LPUART1, p.PC0, p.PC1, config).expect("failed to configure UART!");
+        let uart = Uart::new_blocking(p.LPUART1, p.PC1, p.PC0, config).expect("failed to configure UART!");
         static SERIAL: StaticCell<Uart<'static, Blocking>> = StaticCell::new();
         defmt_serial::defmt_serial(SERIAL.init(uart));
     }
@@ -70,7 +70,7 @@ async fn async_main(_spawner: Spawner) {
     loop {
         let mut buffer = [0; 2];
         // read the temperature register of the onboard lm75
-        match i2c.read(0x48, &mut buffer).await {
+        match i2c.read(0x48u8, &mut buffer).await {
             Ok(_) => info!("--> {:?}", buffer),
             Err(e) => info!("--> Error: {:?}", e),
         }

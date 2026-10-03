@@ -14,8 +14,8 @@
 //! passed from exception mode e.g. out of an interrupt handler.
 //!
 //! This module provides a bounded channel that has a limit on the number of
-//! messages that it can store, and if this limit is reached, trying to send
-//! another message will result in an error being returned.
+//! messages that it can store. If this limit is reached, trying to send
+//! another message either waits or returns an error depending on the function.
 //!
 //! # Example: Message passing between task and interrupt handler
 //!
@@ -210,6 +210,13 @@ impl<'ch, T> DynamicSender<'ch, T> {
     /// See [`Channel::poll_ready_to_send()`]
     pub fn poll_ready_to_send(&self, cx: &mut Context<'_>) -> Poll<()> {
         self.channel.poll_ready_to_send(cx)
+    }
+
+    /// Returns whether the channel is full.
+    ///
+    /// See [`Channel::is_full()`]
+    pub fn is_full(&self) -> bool {
+        self.channel.is_full()
     }
 }
 
@@ -655,6 +662,8 @@ pub(crate) trait DynamicChannel<T> {
     fn poll_ready_to_receive(&self, cx: &mut Context<'_>) -> Poll<()>;
 
     fn poll_receive(&self, cx: &mut Context<'_>) -> Poll<T>;
+
+    fn is_full(&self) -> bool;
 }
 
 /// Error returned by [`try_receive`](Channel::try_receive).
@@ -876,12 +885,12 @@ where
     }
 
     /// Get a sender for this channel.
-    pub fn sender(&self) -> Sender<'_, M, T, N> {
+    pub const fn sender(&self) -> Sender<'_, M, T, N> {
         Sender { channel: self }
     }
 
     /// Get a receiver for this channel.
-    pub fn receiver(&self) -> Receiver<'_, M, T, N> {
+    pub const fn receiver(&self) -> Receiver<'_, M, T, N> {
         Receiver { channel: self }
     }
 
@@ -1020,6 +1029,10 @@ where
     fn poll_receive(&self, cx: &mut Context<'_>) -> Poll<T> {
         Channel::poll_receive(self, cx)
     }
+
+    fn is_full(&self) -> bool {
+        Channel::is_full(self)
+    }
 }
 
 impl<M, T, const N: usize> futures_core::Stream for Channel<M, T, N>
@@ -1055,6 +1068,24 @@ where
         Poll::Ready(Ok(()))
     }
 }
+
+impl core::fmt::Display for TryReceiveError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => f.write_str("Empty"),
+        }
+    }
+}
+impl core::error::Error for TryReceiveError {}
+
+impl<T> core::fmt::Display for TrySendError<T> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Full(_) => f.write_str("Full"),
+        }
+    }
+}
+impl<T: core::fmt::Debug> core::error::Error for TrySendError<T> {}
 
 #[cfg(test)]
 mod tests {

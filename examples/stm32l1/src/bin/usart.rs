@@ -3,9 +3,10 @@
 
 use cortex_m_rt::entry;
 use defmt::*;
+use defmt_rtt as _;
 use embassy_stm32::usart::{Config, Uart};
 use embassy_stm32::{bind_interrupts, peripherals, usart};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     USART2 => usart::InterruptHandler<peripherals::USART2>;
@@ -18,7 +19,7 @@ fn main() -> ! {
     let p = embassy_stm32::init(Default::default());
 
     let config = Config::default();
-    let mut usart = Uart::new_blocking(p.USART2, p.PA3, p.PA2, config).unwrap();
+    let mut usart = Uart::new_blocking(p.USART2, p.PA2, p.PA3, config).unwrap();
     let desired_baudrate = 9600; // Default is 115200 and 9600 is used as example
 
     match usart.set_baudrate(desired_baudrate) {

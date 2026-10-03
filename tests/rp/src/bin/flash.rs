@@ -6,11 +6,13 @@ teleprobe_meta::target!(b"rpi-pico");
 teleprobe_meta::target!(b"pimoroni-pico-plus-2");
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_rp::flash::{Async, ERASE_SIZE, FLASH_BASE};
+use embassy_rp::flash::{ERASE_SIZE, FLASH_BASE};
+use embassy_rp::mode::Async;
 use embassy_rp::peripherals::DMA_CH0;
 use embassy_rp::{bind_interrupts, dma};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
@@ -23,7 +25,7 @@ async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     info!("Hello World!");
 
-    let mut flash = embassy_rp::flash::Flash::<_, Async, { 2 * 1024 * 1024 }>::new(p.FLASH, p.DMA_CH0, Irqs);
+    let mut flash = embassy_rp::flash::Flash::<Async, { 2 * 1024 * 1024 }>::new(p.FLASH, p.DMA_CH0, Irqs);
 
     // Get JEDEC id
     #[cfg(feature = "rp2040")]

@@ -8,6 +8,7 @@
 ///
 use bouncy_box::BouncyBox;
 use defmt::{info, unwrap};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{Level, Output, Speed};
 use embassy_stm32::ltdc::{self, Ltdc, LtdcConfiguration, LtdcLayer, LtdcLayerConfig, PolarityActive, PolarityEdge};
@@ -22,8 +23,8 @@ use embedded_graphics::pixelcolor::raw::RawU24;
 use embedded_graphics::prelude::*;
 use embedded_graphics::primitives::Rectangle;
 use heapless::index_map::{Entry, FnvIndexMap};
+use panic_probe as _;
 use tinybmp::Bmp;
-use {defmt_rtt as _, panic_probe as _};
 
 const DISPLAY_WIDTH: usize = 800;
 const DISPLAY_HEIGHT: usize = 480;
@@ -81,7 +82,6 @@ async fn main(spawner: Spawner) {
     let mut ltdc_bl_ctrl = Output::new(p.PE6, Level::Low, Speed::High);
     let mut ltdc = Ltdc::<_, ltdc::Rgb888>::new_with_pins(
         p.LTDC, // PERIPHERAL
-        Irqs,   // IRQS
         p.PD3,  // CLK
         p.PE0,  // HSYNC
         p.PD13, // VSYNC
@@ -110,6 +110,7 @@ async fn main(spawner: Spawner) {
         p.PD10, // R5
         p.PD11, // R6
         p.PD12, // R7
+        Irqs,   // IRQS
     );
     ltdc.init(&ltdc_config);
     ltdc_bl_ctrl.set_high();

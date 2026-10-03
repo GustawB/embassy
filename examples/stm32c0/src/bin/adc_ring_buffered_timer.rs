@@ -12,16 +12,16 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, AdcChannel as _, RegularAdcTrigger, Resolution, SampleTime};
-use embassy_stm32::pac::adc::vals::Exten;
+use embassy_stm32::adc::{Adc, AdcChannel as _, Config, Exten, RegularAdcTrigger, Resolution, SampleTime};
 use embassy_stm32::peripherals::DMA1_CH1;
 use embassy_stm32::time::Hertz;
 use embassy_stm32::timer::complementary_pwm::{ComplementaryPwm, Mms2};
 use embassy_stm32::timer::low_level::CountingMode;
 use embassy_stm32::triggers::TIM1_TRGO2;
 use embassy_stm32::{bind_interrupts, dma};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     DMA1_CHANNEL1 => dma::InterruptHandler<DMA1_CH1>;
@@ -55,20 +55,18 @@ async fn main(_spawner: Spawner) {
     pwm.set_mms2(Mms2::Update);
 
     // Configure ADC with DMA ring buffer
-    let mut adc = Adc::new(p.ADC1, Resolution::Bits12);
+    let mut adc_config = Config::default();
+    adc_config.resolution = Some(Resolution::Bits12);
+    let mut adc = Adc::new_blocking(p.ADC1, adc_config);
 
     // Setup channels to measure
     let mut vrefint = adc.enable_vrefint();
     let mut temperature = adc.enable_temperature();
 
-    let vrefint_channel = vrefint.degrade_adc();
-    let temp_channel = temperature.degrade_adc();
-    let pa0 = p.PA0.degrade_adc();
-
     let sequence = [
-        (vrefint_channel, SampleTime::Cycles125),
-        (temp_channel, SampleTime::Cycles125),
-        (pa0, SampleTime::Cycles125),
+        (vrefint.reborrow_adc(), SampleTime::Cycles125),
+        (temperature.reborrow_adc(), SampleTime::Cycles125),
+        (p.PA0.reborrow_adc(), SampleTime::Cycles125),
     ]
     .into_iter();
 
@@ -82,7 +80,7 @@ async fn main(_spawner: Spawner) {
         &mut dma_buf,
         Irqs,
         sequence,
-        RegularAdcTrigger::from(TIM1_TRGO2, Exten::RisingEdge), // Timer 1 TRGO2 as trigger source and trigger on rising edge (can also use FALLING_EDGE or BOTH_EDGES)
+        Some(RegularAdcTrigger::from(TIM1_TRGO2, Exten::RisingEdge)), // Timer 1 TRGO2 as trigger source and trigger on rising edge (can also use FallingEdge or BothEdges)
     );
 
     // Start ADC conversions and DMA transfer

@@ -9,9 +9,9 @@ pub(crate) enum OspiMode {
     MemoryMapped,
 }
 
-impl Into<u8> for OspiMode {
-    fn into(self) -> u8 {
-        match self {
+impl From<OspiMode> for u8 {
+    fn from(val: OspiMode) -> Self {
+        match val {
             OspiMode::IndirectWrite => 0b00,
             OspiMode::IndirectRead => 0b01,
             OspiMode::AutoPolling => 0b10,
@@ -37,9 +37,9 @@ pub enum OspiWidth {
     OCTO,
 }
 
-impl Into<u8> for OspiWidth {
-    fn into(self) -> u8 {
-        match self {
+impl From<OspiWidth> for u8 {
+    fn from(val: OspiWidth) -> Self {
+        match val {
             OspiWidth::NONE => 0b00,
             OspiWidth::SING => 0b01,
             OspiWidth::DUAL => 0b10,
@@ -59,9 +59,9 @@ pub enum FlashSelection {
     Flash2,
 }
 
-impl Into<bool> for FlashSelection {
-    fn into(self) -> bool {
-        match self {
+impl From<FlashSelection> for bool {
+    fn from(val: FlashSelection) -> Self {
+        match val {
             FlashSelection::Flash1 => false,
             FlashSelection::Flash2 => true,
         }
@@ -81,9 +81,9 @@ pub enum WrapSize {
     _128Bytes,
 }
 
-impl Into<u8> for WrapSize {
-    fn into(self) -> u8 {
-        match self {
+impl From<WrapSize> for u8 {
+    fn from(val: WrapSize) -> Self {
+        match val {
             WrapSize::None => 0x00,
             WrapSize::_16Bytes => 0x02,
             WrapSize::_32Bytes => 0x03,
@@ -107,15 +107,34 @@ pub enum MemoryType {
     HyperBusRegister,
 }
 
-impl Into<u8> for MemoryType {
-    fn into(self) -> u8 {
-        match self {
+impl From<MemoryType> for u8 {
+    fn from(val: MemoryType) -> Self {
+        match val {
             MemoryType::Micron => 0x00,
             MemoryType::Macronix => 0x01,
             MemoryType::Standard => 0x02,
             MemoryType::MacronixRam => 0x03,
             MemoryType::HyperBusMemory => 0x04,
             MemoryType::HyperBusRegister => 0x04,
+        }
+    }
+}
+
+/// HyperBus latency mode (OCTOSPI_HLCR.LM).
+#[derive(Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum HyperbusLatencyMode {
+    /// Variable initial latency.
+    Variable,
+    /// Fixed latency (twice the access time).
+    Fixed,
+}
+
+impl From<HyperbusLatencyMode> for u8 {
+    fn from(val: HyperbusLatencyMode) -> Self {
+        match val {
+            HyperbusLatencyMode::Variable => 0,
+            HyperbusLatencyMode::Fixed => 1,
         }
     }
 }
@@ -196,9 +215,9 @@ pub enum AddressSize {
     _32bit,
 }
 
-impl Into<u8> for AddressSize {
-    fn into(self) -> u8 {
-        match self {
+impl From<AddressSize> for u8 {
+    fn from(val: AddressSize) -> Self {
+        match val {
             AddressSize::_8Bit => 0b00,
             AddressSize::_16Bit => 0b01,
             AddressSize::_24bit => 0b10,
@@ -222,9 +241,9 @@ pub enum ChipSelectHighTime {
     _8Cycle,
 }
 
-impl Into<u8> for ChipSelectHighTime {
-    fn into(self) -> u8 {
-        match self {
+impl From<ChipSelectHighTime> for u8 {
+    fn from(val: ChipSelectHighTime) -> Self {
+        match val {
             ChipSelectHighTime::_1Cycle => 0,
             ChipSelectHighTime::_2Cycle => 1,
             ChipSelectHighTime::_3Cycle => 2,
@@ -276,9 +295,9 @@ pub enum FIFOThresholdLevel {
     _32Bytes,
 }
 
-impl Into<u8> for FIFOThresholdLevel {
-    fn into(self) -> u8 {
-        match self {
+impl From<FIFOThresholdLevel> for u8 {
+    fn from(val: FIFOThresholdLevel) -> Self {
+        match val {
             FIFOThresholdLevel::_1Bytes => 0,
             FIFOThresholdLevel::_2Bytes => 1,
             FIFOThresholdLevel::_3Bytes => 2,
@@ -354,9 +373,9 @@ pub enum DummyCycles {
     _31,
 }
 
-impl Into<u8> for DummyCycles {
-    fn into(self) -> u8 {
-        match self {
+impl From<DummyCycles> for u8 {
+    fn from(val: DummyCycles) -> Self {
+        match val {
             DummyCycles::_0 => 0,
             DummyCycles::_1 => 1,
             DummyCycles::_2 => 2,

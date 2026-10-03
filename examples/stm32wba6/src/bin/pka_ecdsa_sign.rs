@@ -22,13 +22,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_stm32::pka::{EccPoint, EcdsaCurveParams, EcdsaPublicKey, EcdsaSignature, Pka};
-use embassy_stm32::rcc::{
-    AHB5Prescaler, AHBPrescaler, APBPrescaler, PllDiv, PllMul, PllPreDiv, PllSource, Sysclk, VoltageScale, mux,
-};
+use embassy_stm32::rcc::mux;
 use embassy_stm32::rng::Rng;
 use embassy_stm32::{Config, bind_interrupts, peripherals};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     PKA => embassy_stm32::pka::InterruptHandler<peripherals::PKA>;
@@ -38,22 +37,6 @@ bind_interrupts!(struct Irqs {
 #[embassy_executor::main]
 async fn main(_spawner: embassy_executor::Spawner) {
     let mut config = Config::default();
-    config.rcc.pll1 = Some(embassy_stm32::rcc::Pll {
-        source: PllSource::Hsi,
-        prediv: PllPreDiv::Div1,
-        mul: PllMul::Mul30,
-        divr: Some(PllDiv::Div5),
-        divq: None,
-        divp: Some(PllDiv::Div30),
-        frac: Some(0),
-    });
-    config.rcc.ahb_pre = AHBPrescaler::Div1;
-    config.rcc.apb1_pre = APBPrescaler::Div1;
-    config.rcc.apb2_pre = APBPrescaler::Div1;
-    config.rcc.apb7_pre = APBPrescaler::Div1;
-    config.rcc.ahb5_pre = AHB5Prescaler::Div4;
-    config.rcc.voltage_scale = VoltageScale::Range1;
-    config.rcc.sys = Sysclk::Pll1R;
     // RNG requires HSI clock source on WBA
     config.rcc.mux.rngsel = mux::Rngsel::Hsi;
 
@@ -95,30 +78,13 @@ async fn main(_spawner: embassy_executor::Spawner) {
     info!("Curve: NIST P-256 (secp256r1)");
     info!("Message Hash: {:02x}", message_hash);
 
-    // Generate random k value using hardware RNG
-    // CRITICAL: k must be random and unique for every signature!
-    let mut k = [0u8; 32];
-    if let Err(e) = rng.async_fill_bytes(&mut k).await {
-        error!("Failed to generate random k: {:?}", e);
-        loop {
-            cortex_m::asm::wfi();
-        }
-    }
-
-    // Ensure k is in valid range (1 < k < n)
-    // For simplicity, we set the MSB to ensure it's less than n
-    k[0] &= 0x7F;
-    // Ensure k is not zero
-    k[31] |= 0x01;
-
-    info!("Random k:     {:02x}", k);
-
     // Generate signature
     let mut sig_r = [0u8; 32];
     let mut sig_s = [0u8; 32];
 
     info!("Signing message...");
-    match pka.ecdsa_sign(&curve, &private_key, &k, &message_hash, &mut sig_r, &mut sig_s) {
+    // The driver draws the nonce from the RNG.
+    match pka.ecdsa_sign_blocking(&curve, &private_key, &message_hash, &mut rng, &mut sig_r, &mut sig_s) {
         Ok(()) => {
             info!("Signature generated successfully!");
             info!("Signature R: {:02x}", sig_r);
@@ -142,7 +108,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
 
     let signature = EcdsaSignature { r: &sig_r, s: &sig_s };
 
-    match pka.ecdsa_verify(&curve, &public_key, &signature, &message_hash) {
+    match pka.ecdsa_verify_blocking(&curve, &public_key, &signature, &message_hash) {
         Ok(true) => {
             info!("Generated signature verified successfully!");
         }
@@ -162,7 +128,7 @@ async fn main(_spawner: embassy_executor::Spawner) {
     let generator_y = curve.generator_y;
 
     let mut derived_pub = EccPoint::new(32);
-    match pka.ecc_mul(&curve, &private_key, generator_x, generator_y, &mut derived_pub) {
+    match pka.ecc_mul_blocking(&curve, &private_key, generator_x, generator_y, &mut derived_pub) {
         Ok(()) => {
             info!("Public key derived from private key:");
             info!("Derived X:  {:02x}", derived_pub.x[..32]);

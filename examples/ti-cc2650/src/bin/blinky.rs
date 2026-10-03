@@ -10,11 +10,8 @@ async fn main(_spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
     let mut led = Output::new(p.P_13, Level::Low);
 
-    led.set_high();
-    led.set_low();
-    led.set_high();
-    led.set_low();
-    led.set_high();
-    led.set_low();
-    loop {}
+    loop {
+        led.set_high();
+        led.set_low();
+    }
 }

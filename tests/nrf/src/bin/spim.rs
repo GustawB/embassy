@@ -6,10 +6,11 @@
 mod common;
 
 use defmt::{assert_eq, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::spim::Spim;
 use embassy_nrf::{peripherals, spim};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -18,11 +19,11 @@ async fn main(_spawner: Spawner) {
     config.frequency = spim::Frequency::M1;
     let mut spim = Spim::new(
         peri!(p, SPIM0).reborrow(),
-        irqs!(SPIM0),
-        peri!(p, PIN_X).reborrow(),
-        peri!(p, PIN_A).reborrow(), // MISO
+        peri!(p, PIN_X).reborrow(), // SCK
         peri!(p, PIN_B).reborrow(), // MOSI
-        config.clone(),
+        peri!(p, PIN_A).reborrow(), // MISO
+        irqs!(SPIM0),
+        config,
     );
     let data = [
         0x42, 0x43, 0x44, 0x45, 0x66, 0x12, 0x23, 0x34, 0x45, 0x19, 0x91, 0xaa, 0xff, 0xa5, 0x5a, 0x77,

@@ -2,12 +2,13 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::sdmmc::Sdmmc;
-use embassy_stm32::sdmmc::sd::{CmdBlock, StorageDevice};
-use embassy_stm32::time::mhz;
 use embassy_stm32::{Config, bind_interrupts, peripherals, sdmmc};
-use {defmt_rtt as _, panic_probe as _};
+use embassy_time::Delay;
+use panic_probe as _;
+use sdio::BlockDevice;
 
 bind_interrupts!(struct Irqs {
     SDMMC1 => sdmmc::InterruptHandler<peripherals::SDMMC1>;
@@ -42,21 +43,21 @@ async fn main(_spawner: Spawner) {
 
     let mut sdmmc = Sdmmc::new_4bit(
         p.SDMMC1,
-        Irqs,
         p.PC12,
         p.PD2,
         p.PC8,
         p.PC9,
         p.PC10,
         p.PC11,
+        Irqs,
         Default::default(),
     );
 
-    let mut cmd_block = CmdBlock::new();
-
-    let storage = StorageDevice::new_sd_card(&mut sdmmc, &mut cmd_block, mhz(25))
-        .await
-        .unwrap();
+    let storage = loop {
+        if let Ok(storage) = BlockDevice::<_, _, _, 512>::new_sd_card(&mut sdmmc, 24_000_000, Delay).await {
+            break storage;
+        }
+    };
 
     let card = storage.card();
 

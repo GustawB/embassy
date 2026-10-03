@@ -2,13 +2,15 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_nrf::mode::Async;
 use embassy_nrf::peripherals::UARTE0;
 use embassy_nrf::uarte::UarteRx;
 use embassy_nrf::{bind_interrupts, uarte};
 use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 static CHANNEL: Channel<ThreadModeRawMutex, [u8; 8], 1> = Channel::new();
 
@@ -23,7 +25,7 @@ async fn main(spawner: Spawner) {
     config.parity = uarte::Parity::Excluded;
     config.baudrate = uarte::Baudrate::Baud115200;
 
-    let uart = uarte::Uarte::new(p.UARTE0, p.P0_08, p.P0_06, Irqs, config);
+    let uart = uarte::Uarte::new(p.UARTE0, p.P0_06, p.P0_08, Irqs, config);
     let (mut tx, rx) = uart.split();
 
     info!("uarte initialized!");
@@ -52,7 +54,7 @@ async fn main(spawner: Spawner) {
 }
 
 #[embassy_executor::task]
-async fn reader(mut rx: UarteRx<'static>) {
+async fn reader(mut rx: UarteRx<'static, Async>) {
     let mut buf = [0; 8];
     loop {
         info!("reading...");

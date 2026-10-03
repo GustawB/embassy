@@ -1,20 +1,24 @@
-#[cfg(feature = "wba_ble")]
-use crate::bindings::ble::{BleStack_Init, BleStack_init_t, tBleStatus};
-use crate::bindings::link_layer::{
-    LL_SYS_STATUS_T_LL_SYS_OK, ll_sys_assert, ll_sys_bg_process_init, ll_sys_config_params, ll_sys_dp_slp_init,
-    ll_sys_status_t,
+#[cfg(feature = "wba-ble")]
+use crate::wba::bindings::ble::{BleStack_Init, BleStack_init_t, tBleStatus};
+#[cfg(feature = "wba-ble")]
+use crate::wba::bindings::link_layer::{
+    ble_buff_hdr_p, hci_dispatch_tbl, hst_cbk, ll_intf_init, ll_intf_rgstr_hst_cbk, ll_intf_rgstr_hst_cbk_ll_queue_full,
 };
-#[cfg(feature = "wba_ble")]
-use crate::bindings::link_layer::{
-    ble_buff_hdr_p, hci_dispatch_tbl, hci_get_dis_tbl, hst_cbk, ll_intf_init, ll_intf_rgstr_hst_cbk,
-    ll_intf_rgstr_hst_cbk_ll_queue_full,
+use crate::wba::bindings::link_layer::{
+    ll_sys_assert, ll_sys_bg_process_init, ll_sys_config_params, ll_sys_dp_slp_init, ll_sys_status_t,
+    ll_sys_status_t_LL_SYS_OK,
 };
 
+unsafe extern "C" {
+    #[doc = " @brief  get a pointer to the HCI dispatch table.\n\n @param  p_p_dispatch_tbl : [out] pointer to be filled by the address of the HCI dispatch table."]
+    pub fn hci_get_dis_tbl(p_p_dispatch_tbl: *mut *const hci_dispatch_tbl);
+}
+
 /// BLE status code for success
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 const BLE_STATUS_SUCCESS: tBleStatus = 0;
-#[cfg(feature = "wba_mac")]
-use crate::bindings::mac::ST_MAC_preInit;
+#[cfg(feature = "wba-mac")]
+use crate::wba::bindings::mac::ST_MAC_preInit;
 // /**
 //   ******************************************************************************
 //   * @file    ll_sys_startup.c
@@ -52,10 +56,12 @@ use crate::bindings::mac::ST_MAC_preInit;
  */
 static mut MISSED_HCI_EVENT_FLAG: u8 = 0;
 
+static mut IS_LL_INITIALIZED: u8 = 0;
+
 // static void ll_sys_dependencies_init(void);
 // #if SUPPORT_BLE
 
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 #[allow(dead_code)]
 unsafe extern "C" fn ll_sys_event_missed_cb(_ptr_evnt_hdr: ble_buff_hdr_p) {
     MISSED_HCI_EVENT_FLAG = 1;
@@ -64,7 +70,7 @@ unsafe extern "C" fn ll_sys_event_missed_cb(_ptr_evnt_hdr: ble_buff_hdr_p) {
 // ll_sys_ble_cntrl_init is called by BleStack_Init from the library.
 // We must provide this function as it's expected as a callback.
 
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 /**
  * @brief  Initialize the Link Layer IP BLE controller
  * @param  host_callback - callback function for HCI events
@@ -74,56 +80,40 @@ unsafe extern "C" fn ll_sys_event_missed_cb(_ptr_evnt_hdr: ble_buff_hdr_p) {
  */
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ll_sys_ble_cntrl_init(host_callback: hst_cbk) {
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: starting");
+    trace!("ll_sys_ble_cntrl_init: starting");
 
     let p_hci_dis_tbl: *const hci_dispatch_tbl = core::ptr::null();
 
     hci_get_dis_tbl(&p_hci_dis_tbl as *const *const _ as *mut *const _);
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: hci_get_dis_tbl done");
+
+    trace!("ll_sys_ble_cntrl_init: hci_get_dis_tbl done");
 
     ll_intf_init(p_hci_dis_tbl);
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: ll_intf_init done");
+
+    trace!("ll_sys_ble_cntrl_init: ll_intf_init done");
 
     ll_intf_rgstr_hst_cbk(host_callback);
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: ll_intf_rgstr_hst_cbk done");
+
+    trace!("ll_sys_ble_cntrl_init: ll_intf_rgstr_hst_cbk done");
 
     ll_intf_rgstr_hst_cbk_ll_queue_full(Some(ll_sys_event_missed_cb));
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: ll_intf_rgstr_hst_cbk_ll_queue_full done");
+
+    trace!("ll_sys_ble_cntrl_init: ll_intf_rgstr_hst_cbk_ll_queue_full done");
 
     ll_sys_dependencies_init();
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_ble_cntrl_init: ll_sys_dependencies_init done");
+
+    trace!("ll_sys_ble_cntrl_init: ll_sys_dependencies_init done");
 }
 
 // NOTE: init_ble_link_layer and init_ble_link_layer_minimal have been removed.
 // Use init_ble_stack() instead, which uses BleStack_Init for proper initialization.
-
-#[cfg(feature = "wba_ble")]
-/// Complete the BLE link layer initialization
-/// This should be called after the sequencer is running
-pub fn complete_ble_link_layer_init() {
-    #[cfg(feature = "defmt")]
-    defmt::trace!("complete_ble_link_layer_init: starting");
-
-    unsafe {
-        ll_sys_dependencies_init();
-    }
-
-    #[cfg(feature = "defmt")]
-    defmt::trace!("complete_ble_link_layer_init: done");
-}
 
 // ========================================================================
 // BleStack_Init based initialization (recommended approach)
 // ========================================================================
 
 /// BLE stack configuration parameters
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 pub mod ble_config {
     /// Maximum number of simultaneous BLE connections
     pub const CFG_BLE_NUM_LINK: u8 = 2;
@@ -149,8 +139,67 @@ pub mod ble_config {
     pub const CFG_BLE_EATT_BEARER_PER_LINK: u8 = 0;
     /// NVM maximum size (in 64-bit words)
     pub const CFG_BLE_NVM_SIZE_MAX: u16 = 256;
-    /// BLE options
-    pub const CFG_BLE_OPTIONS: u16 = 0x0D; // DEV_NAME_READ_ONLY | REDUCED_DB_IN_NVM | CS_ALGO_2
+    /// Host event FIFO size in bytes.
+    ///
+    /// The host stack queues its events here, and it is not optional: every ST
+    /// application sets it (512 bytes at the low end, and 1536 in
+    /// `BLE_p2pServer_Ext`, which this mirrors). Passing a null buffer leaves the
+    /// host with nowhere to queue events, and the full stack then rejects
+    /// `aci_gap_set_discoverable` with 0x0C (HCI_COMMAND_DISALLOWED).
+    pub const CFG_BLE_HOST_EVENT_BUF_SIZE: usize = 1536;
+
+    /// Host event FIFO length in `u16` units, which is how the stack counts it.
+    pub const fn host_event_fifo_len() -> usize {
+        divc(CFG_BLE_HOST_EVENT_BUF_SIZE, 2)
+    }
+    /// ST's `BLE_OPTIONS_*` flags for [`BleStack_init_t::options`] (ble_defs.h).
+    #[allow(dead_code)]
+    pub mod ble_options {
+        /// Link Layer only: brings up no host stack, so GAP and GATT commands are
+        /// all rejected with 0x0C. Never set this for a GAP application.
+        pub const LL_ONLY: u16 = 0x0001;
+        pub const NO_SVC_CHANGE_DESC: u16 = 0x0002;
+        pub const DEV_NAME_READ_ONLY: u16 = 0x0004;
+        /// Switches the stack to extended advertising, which *disables* the legacy
+        /// advertising commands. Do not set this: this crate only wraps the legacy
+        /// ones (`aci_gap_set_discoverable` and
+        /// `aci_gap_set_undirected_connectable`), and both are rejected with 0x0C
+        /// while it is on. Enabling it would require wrapping
+        /// `aci_gap_adv_set_configuration` / `aci_gap_adv_set_enable` instead.
+        pub const EXTENDED_ADV: u16 = 0x0008;
+        pub const CS_ALGO_2: u16 = 0x0010;
+        pub const REDUCED_DB_IN_NVM: u16 = 0x0020;
+        pub const GATT_CACHING: u16 = 0x0040;
+        pub const POWER_CLASS_1: u16 = 0x0080;
+        pub const APPEARANCE_WRITABLE: u16 = 0x0100;
+        pub const ENHANCED_ATT: u16 = 0x0200;
+    }
+
+    /// BLE options.
+    ///
+    /// This was previously the literal `0x0D`, commented as
+    /// "DEV_NAME_READ_ONLY | REDUCED_DB_IN_NVM | CS_ALGO_2" — but those three
+    /// flags are `0x34`. `0x0D` actually decodes to `LL_ONLY | DEV_NAME_READ_ONLY
+    /// | EXTENDED_ADV`, and both of those extra bits are wrong here: `LL_ONLY`
+    /// asks for a build with no host stack, and `EXTENDED_ADV` disables the legacy
+    /// advertising commands this crate is built on. Either one leaves every
+    /// advertising attempt rejected with 0x0C (HCI_COMMAND_DISALLOWED).
+    ///
+    /// The basic stack library ignores both bits, which is why `0x0D` appeared to
+    /// work; the full stack honours them. ST's own `BLE_Privacy_Peripheral`, which
+    /// is the reference for the legacy + controller-privacy flow, ships
+    /// `CFG_BLE_OPTIONS = 0`.
+    ///
+    /// When built with `ble-stack-llo` this flips to `LL_ONLY`: the library brings
+    /// up the link layer but no ST host/security database, and the application
+    /// owns GAP/GATT/SMP (Trouble). This is exactly what Zephyr's
+    /// `hci_stm32wba.c` does (`options = BLE_OPTIONS_LL_ONLY`) against the same
+    /// `libstm32wba_ble_stack_llo.a`.
+    pub const CFG_BLE_OPTIONS: u16 = if cfg!(feature = "ble-stack-llo") {
+        ble_options::LL_ONLY
+    } else {
+        ble_options::DEV_NAME_READ_ONLY
+    };
 
     // Memory block size (from ble_bufsize.h)
     const BLE_MEM_BLOCK_SIZE: usize = 32;
@@ -226,7 +275,7 @@ pub mod ble_config {
 }
 
 /// Static buffers for BLE stack
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 mod ble_buffers {
     use super::ble_config;
 
@@ -238,17 +287,21 @@ mod ble_buffers {
     #[repr(align(4))]
     pub struct GattBuffer(pub [u8; ble_config::gatt_buffer_size()]);
 
-    /// NVM cache buffer
+    /// NVM cache buffer — CFG_BLE_NVM_SIZE_MAX is in u64 word units, not bytes
     #[repr(align(8))]
-    pub struct NvmCacheBuffer(pub [u64; (ble_config::CFG_BLE_NVM_SIZE_MAX as usize + 7) / 8]);
+    pub struct NvmCacheBuffer(pub [u64; ble_config::CFG_BLE_NVM_SIZE_MAX as usize]);
+
+    /// Host event FIFO, in u16 units (see [`ble_config::host_event_fifo_len`]).
+    #[repr(align(4))]
+    pub struct HostEventBuffer(pub [u16; ble_config::host_event_fifo_len()]);
 
     pub static mut DYN_ALLOC_BUFFER: DynAllocBuffer = DynAllocBuffer([0u8; ble_config::dyn_alloc_buffer_size()]);
     pub static mut GATT_BUFFER: GattBuffer = GattBuffer([0u8; ble_config::gatt_buffer_size()]);
-    pub static mut NVM_CACHE_BUFFER: NvmCacheBuffer =
-        NvmCacheBuffer([0u64; (ble_config::CFG_BLE_NVM_SIZE_MAX as usize + 7) / 8]);
+    pub static mut NVM_CACHE_BUFFER: NvmCacheBuffer = NvmCacheBuffer([0u64; ble_config::CFG_BLE_NVM_SIZE_MAX as usize]);
+    pub static mut HOST_EVENT_BUFFER: HostEventBuffer = HostEventBuffer([0u16; ble_config::host_event_fifo_len()]);
 }
 
-#[cfg(feature = "wba_ble")]
+#[cfg(feature = "wba-ble")]
 /// Initialize the BLE stack using the high-level BleStack_Init API
 ///
 /// This is the recommended initialization method as it properly sets up
@@ -260,25 +313,45 @@ pub fn init_ble_stack() -> Result<(), u8> {
 
     use crate::wba::linklayer_plat::LINKLAYER_PLAT_ClockInit;
 
-    #[cfg(feature = "defmt")]
-    defmt::info!("init_ble_stack: starting BLE stack initialization");
+    info!("init_ble_stack: starting BLE stack initialization");
 
-    #[cfg(feature = "defmt")]
     {
-        defmt::debug!("init_ble_stack: buffer sizes:");
-        defmt::debug!("  DYN_ALLOC_BUFFER: {} bytes", dyn_alloc_buffer_size());
-        defmt::debug!("  GATT_BUFFER: {} bytes", gatt_buffer_size());
-        defmt::debug!("  mblockCount: {}", mblock_count());
-        defmt::debug!("  numOfLinks: {}", CFG_BLE_NUM_LINK);
-        defmt::debug!("  attMtu: {}", CFG_BLE_ATT_MTU_MAX);
+        debug!("init_ble_stack: buffer sizes:");
+        debug!("  DYN_ALLOC_BUFFER: {} bytes", dyn_alloc_buffer_size());
+        debug!("  GATT_BUFFER: {} bytes", gatt_buffer_size());
+        debug!("  mblockCount: {}", mblock_count());
+        debug!("  numOfLinks: {}", CFG_BLE_NUM_LINK);
+        debug!("  attMtu: {}", CFG_BLE_ATT_MTU_MAX);
     }
 
     unsafe {
         // 1. Enable radio clock first
         LINKLAYER_PLAT_ClockInit();
 
-        #[cfg(feature = "defmt")]
-        defmt::trace!("init_ble_stack: clock init done");
+        trace!("init_ble_stack: clock init done");
+
+        // 1b. Pre-load any previously persisted bond data from flash into the
+        // NVM cache so the BLE stack can restore bonds from a prior session.
+        // Link-Layer-Only builds have no ST host/security database, so that blob
+        // is meaningless there (Trouble owns bonds and resolving list) -- skip it
+        // so the LL is not handed a full-stack host blob to parse.
+        #[cfg(not(feature = "ble-stack-llo"))]
+        {
+            let cache_bytes = core::slice::from_raw_parts_mut(
+                ble_buffers::NVM_CACHE_BUFFER.0.as_mut_ptr() as *mut u8,
+                core::mem::size_of_val(&ble_buffers::NVM_CACHE_BUFFER),
+            );
+            let loaded = crate::wba::linklayer_plat::load_nvm_from_flash(cache_bytes);
+            if loaded > 0 {
+                info!("init_ble_stack: restored {} bytes of bond data from flash", loaded);
+            }
+        }
+
+        // Register the NVM cache buffer so BLEPLAT_NvmStore writes the whole buffer.
+        crate::wba::linklayer_plat::register_nvm_cache(
+            ble_buffers::NVM_CACHE_BUFFER.0.as_mut_ptr(),
+            ble_buffers::NVM_CACHE_BUFFER.0.len(),
+        );
 
         // 2. Prepare BleStack_init_t structure
         let init_params = BleStack_init_t {
@@ -292,8 +365,8 @@ pub fn init_ble_stack() -> Result<(), u8> {
             gatt_long_write_buffer: core::ptr::null_mut(),
             extra_data_buffer: core::ptr::null_mut(),
             extra_data_buffer_size: 0,
-            host_event_fifo_buffer: core::ptr::null_mut(),
-            host_event_fifo_buffer_size: 0,
+            host_event_fifo_buffer: ble_buffers::HOST_EVENT_BUFFER.0.as_mut_ptr(),
+            host_event_fifo_buffer_size: ble_config::host_event_fifo_len() as u16,
             numAttrRecord: CFG_BLE_NUM_GATT_ATTRIBUTES,
             numAttrServ: CFG_BLE_NUM_GATT_SERVICES,
             attrValueArrSize: CFG_BLE_ATT_VALUE_ARRAY_SIZE,
@@ -309,26 +382,22 @@ pub fn init_ble_stack() -> Result<(), u8> {
             debug: 0x10, // BLE_DEBUG_RAND_ADDR_INIT - required for random address support
         };
 
-        #[cfg(feature = "defmt")]
-        defmt::trace!("init_ble_stack: calling BleStack_Init");
+        trace!("init_ble_stack: calling BleStack_Init");
 
         // 3. Initialize the BLE stack
         let status: tBleStatus = BleStack_Init(&init_params);
 
         if status != BLE_STATUS_SUCCESS {
-            #[cfg(feature = "defmt")]
-            defmt::error!("init_ble_stack: BleStack_Init failed with status 0x{:02X}", status);
+            error!("init_ble_stack: BleStack_Init failed with status 0x{:02X}", status);
             return Err(status);
         }
 
-        #[cfg(feature = "defmt")]
-        defmt::trace!("init_ble_stack: BleStack_Init succeeded");
+        trace!("init_ble_stack: BleStack_Init succeeded");
 
         // Note: ll_sys_dependencies_init() is already called by ll_sys_ble_cntrl_init()
         // which is invoked internally by BleStack_Init(). No need to call it again here.
 
-        #[cfg(feature = "defmt")]
-        defmt::info!("init_ble_stack: BLE stack initialized successfully");
+        info!("init_ble_stack: BLE stack initialized successfully");
     }
 
     Ok(())
@@ -336,7 +405,7 @@ pub fn init_ble_stack() -> Result<(), u8> {
 // #endif /* SUPPORT_BLE */
 // #if defined(MAC)
 // #ifndef OPENTHREAD_CONFIG_FILE
-#[cfg(feature = "wba_mac")]
+#[cfg(feature = "wba-mac")]
 /**
  * @brief  Initialize the Link Layer IP 802.15.4 MAC controller
  * @param  None
@@ -367,42 +436,51 @@ unsafe extern "C" fn ll_sys_thread_init() {
  * @retval None
  */
 unsafe fn ll_sys_dependencies_init() {
-    static mut IS_LL_INITIALIZED: u8 = 0;
     let dp_slp_status: ll_sys_status_t;
 
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: starting");
+    trace!("ll_sys_dependencies_init: starting");
 
     /* Ensure Link Layer resources are created only once */
     if IS_LL_INITIALIZED == 1 {
-        #[cfg(feature = "defmt")]
-        defmt::trace!("ll_sys_dependencies_init: already initialized");
+        trace!("ll_sys_dependencies_init: already initialized");
         return;
     }
     IS_LL_INITIALIZED = 1;
 
     /* Deep sleep feature initialization */
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: calling ll_sys_dp_slp_init");
+    trace!("ll_sys_dependencies_init: calling ll_sys_dp_slp_init");
     dp_slp_status = ll_sys_dp_slp_init();
-    #[cfg(feature = "defmt")]
-    defmt::trace!(
+    trace!(
         "ll_sys_dependencies_init: ll_sys_dp_slp_init done, status={}",
         dp_slp_status
     );
-    ll_sys_assert((dp_slp_status == LL_SYS_STATUS_T_LL_SYS_OK) as u8);
+    ll_sys_assert((dp_slp_status == ll_sys_status_t_LL_SYS_OK) as u8);
 
     /* Background task initialization */
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: calling ll_sys_bg_process_init");
+
+    trace!("ll_sys_dependencies_init: calling ll_sys_bg_process_init");
     ll_sys_bg_process_init();
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: ll_sys_bg_process_init done");
+    trace!("ll_sys_dependencies_init: ll_sys_bg_process_init done");
 
     /* Link Layer user parameters application */
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: calling ll_sys_config_params");
+
+    trace!("ll_sys_dependencies_init: calling ll_sys_config_params");
     ll_sys_config_params();
-    #[cfg(feature = "defmt")]
-    defmt::trace!("ll_sys_dependencies_init: ll_sys_config_params done");
+    trace!("ll_sys_dependencies_init: ll_sys_config_params done");
+}
+
+/// Reset all BLE host stack state so that `init_ble_stack()` can safely run again.
+///
+/// Zeros the static memory buffers passed to `BleStack_Init()` and resets
+/// `IS_LL_INITIALIZED` so `ll_sys_dependencies_init()` re-registers the link
+/// layer background task on the next call. Must only be called after the BLE
+/// controller has been reset via `HCI_Reset`.
+#[cfg(feature = "wba-ble")]
+pub fn reset_ble_stack() {
+    unsafe {
+        IS_LL_INITIALIZED = 0;
+        ble_buffers::DYN_ALLOC_BUFFER.0.fill(0);
+        ble_buffers::GATT_BUFFER.0.fill(0);
+        ble_buffers::NVM_CACHE_BUFFER.0.fill(0);
+    }
 }

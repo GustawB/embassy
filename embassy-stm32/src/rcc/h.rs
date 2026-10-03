@@ -80,7 +80,7 @@ pub struct Pll {
     /// PLL multiplication factor.
     pub mul: PllMul,
 
-    #[cfg(any(stm32h743))]
+    #[cfg(any(stm32h743, stm32h730))]
     /// PLL Fractional multiplier.
     pub fracn: Option<u16>,
 
@@ -494,10 +494,7 @@ pub(crate) unsafe fn init(config: Config) {
     while RCC.cfgr().read().sws() != Sysclk::Hsi {}
 
     // Configure HSI
-    let hsi = match config.hsi {
-        None => None,
-        Some(hsidiv) => Some(HSI_FREQ / hsidiv),
-    };
+    let hsi = config.hsi.map(|hsidiv| HSI_FREQ / hsidiv);
 
     // Configure HSE
     let hse = match config.hse {
@@ -544,28 +541,20 @@ pub(crate) unsafe fn init(config: Config) {
 
     // Configure PLLs.
     let pll_input = PllInput { csi, hse, hsi };
-    let pll1 = config.pll1.map_or_else(
-        || {
-            disable_pll(0);
-            PllOutput::default()
-        },
-        |c| init_pll(0, Some(c), &pll_input),
-    );
-    let pll2 = config.pll2.map_or_else(
-        || {
-            disable_pll(1);
-            PllOutput::default()
-        },
-        |c| init_pll(1, Some(c), &pll_input),
-    );
+    disable_pll(0);
+    let pll1 = config
+        .pll1
+        .map_or_else(PllOutput::default, |c| init_pll(0, c, &pll_input));
+    disable_pll(1);
+    let pll2 = config
+        .pll2
+        .map_or_else(PllOutput::default, |c| init_pll(1, c, &pll_input));
     #[cfg(any(rcc_h5, stm32h7, stm32h7rs))]
-    let pll3 = config.pll3.map_or_else(
-        || {
-            disable_pll(2);
-            PllOutput::default()
-        },
-        |c| init_pll(2, Some(c), &pll_input),
-    );
+    disable_pll(2);
+    #[cfg(any(rcc_h5, stm32h7, stm32h7rs))]
+    let pll3 = config
+        .pll3
+        .map_or_else(PllOutput::default, |c| init_pll(2, c, &pll_input));
 
     // Configure sysclk
     let sys = match config.sys {
@@ -622,7 +611,7 @@ pub(crate) unsafe fn init(config: Config) {
     let hclk = {
         let d1cpre_clk = sys / config.d1c_pre;
         assert!(d1cpre_clk <= d1cpre_clk_max);
-        sys / config.ahb_pre
+        d1cpre_clk / config.ahb_pre
     };
     #[cfg(stm32h5)]
     let hclk = sys / config.ahb_pre;
@@ -969,13 +958,7 @@ fn disable_pll(num: usize) {
     RCC.pllcfgr(num).write(|w| w.set_divm(PllPreDiv::from_bits(0)));
 }
 
-fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
-    let Some(config) = config else {
-        disable_pll(num);
-
-        return PllOutput::default();
-    };
-
+fn init_pll(num: usize, config: Pll, input: &PllInput) -> PllOutput {
     let in_clk = match config.source {
         PllSource::Disable => panic!("must not set PllSource::Disable"),
         PllSource::Hsi => unwrap!(input.hsi),
@@ -997,14 +980,14 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
     // be chosen when the reference clock frequency is lower than 2 MHz.
     let wide_allowed = ref_range != Pllrge::Range1;
 
-    #[cfg(stm32h743)]
+    #[cfg(any(stm32h743, stm32h730))]
     let vco_clk = match config.fracn {
         Some(fracn) => {
             Hertz::hz((ref_clk.0 as f32 * ((config.mul.to_bits() + 1) as f32 + (fracn as f32 / 8192.0))) as u32)
         }
         None => ref_clk * config.mul,
     };
-    #[cfg(not(stm32h743))]
+    #[cfg(not(any(stm32h743, stm32h730)))]
     let vco_clk = ref_clk * config.mul;
 
     let vco_range = if VCO_RANGE.contains(&vco_clk) {
@@ -1053,7 +1036,7 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
             w.set_pllsrc(config.source);
         });
 
-        #[cfg(stm32h743)]
+        #[cfg(any(stm32h743, stm32h730))]
         if let Some(fracn) = config.fracn {
             RCC.pllfracr(num).modify(|w| w.set_fracn(fracn))
         }
@@ -1062,14 +1045,14 @@ fn init_pll(num: usize, config: Option<Pll>, input: &PllInput) -> PllOutput {
             w.set_pllvcosel(num, vco_range);
             w.set_pllrge(num, ref_range);
 
-            #[cfg(stm32h743)]
+            #[cfg(any(stm32h743, stm32h730))]
             if config.fracn.is_some() {
                 w.set_pllfracen(num, true);
             } else {
                 w.set_pllfracen(num, false);
             }
 
-            #[cfg(not(stm32h743))]
+            #[cfg(not(any(stm32h743, stm32h730)))]
             w.set_pllfracen(num, false);
 
             w.set_divpen(num, p.is_some());
@@ -1328,4 +1311,60 @@ pub fn set_and_enable_comp_vals(cv: &CompVals) {
         w.set_octo2_comp_codesel(true);
         w.set_comp_codesel(true);
     });
+}
+
+/// CPU Reset Sources
+///
+/// The STM32 RCC peripheral implements the ability for the CPU to detect why a reset
+/// occurred.
+#[cfg(rcc_h7rm0433)]
+#[derive(Debug, Copy, Clone)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum ResetReason {
+    PowerOnReset,
+    PinReset,
+    BrownoutReset,
+    SysReset,
+    CpuReset,
+    Wwdg1Reset,
+    Iwdg1Reset,
+    D1ExitStandby,
+    D2ExitStandby,
+    D1ErroneousStandby,
+    Unknown(u32),
+}
+
+#[cfg(rcc_h7rm0433)]
+impl ResetReason {
+    /// Read and clear the reason the core thinks the reset occurred.
+    pub fn read_clear() -> ResetReason {
+        let rsr = RCC.rsr().read();
+        RCC.rsr().modify(|w| w.set_rmvf(true));
+
+        // Refer to Reference Manual (RM0433, Rev 8, Table 56).
+        match (
+            rsr.lpwrrstf(),
+            rsr.wwdg1rstf(),
+            rsr.iwdg1rstf(),
+            rsr.sftrstf(),
+            rsr.porrstf(),
+            rsr.pinrstf(),
+            rsr.borrstf(),
+            rsr.d2rstf(),
+            rsr.d1rstf(),
+            rsr.cpurstf(),
+        ) {
+            (false, false, false, false, true, true, true, true, true, true) => ResetReason::PowerOnReset,
+            (false, false, false, false, false, true, false, false, false, true) => ResetReason::PinReset,
+            (false, false, false, false, false, true, true, false, false, true) => ResetReason::BrownoutReset,
+            (false, false, false, true, false, true, false, false, false, true) => ResetReason::SysReset,
+            (false, false, false, false, false, false, false, false, false, true) => ResetReason::CpuReset,
+            (false, true, false, false, false, true, false, false, false, true) => ResetReason::Wwdg1Reset,
+            (false, false, true, false, false, true, false, false, false, true) => ResetReason::Iwdg1Reset,
+            (false, false, false, false, false, false, false, false, true, false) => ResetReason::D1ExitStandby,
+            (false, false, false, false, false, false, false, true, false, false) => ResetReason::D2ExitStandby,
+            (true, false, false, false, false, true, false, false, false, true) => ResetReason::D1ErroneousStandby,
+            _ => ResetReason::Unknown(rsr.0),
+        }
+    }
 }

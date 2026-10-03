@@ -2,6 +2,7 @@
 #![no_main]
 
 use defmt::{panic, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_stm32::time::Hertz;
@@ -10,7 +11,7 @@ use embassy_stm32::{Config, bind_interrupts, peripherals, usb};
 use embassy_usb::Builder;
 use embassy_usb::class::cdc_acm::{CdcAcmClass, State};
 use embassy_usb::driver::EndpointError;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     OTG_HS => usb::InterruptHandler<peripherals::USB_OTG_HS>;
@@ -65,7 +66,7 @@ async fn main(_spawner: Spawner) {
     // has to support it or USB won't work at all. See docs on `vbus_detection` for details.
     config.vbus_detection = false;
 
-    let driver = Driver::new_hs(p.USB_OTG_HS, Irqs, p.PM6, p.PM5, &mut ep_out_buffer, config);
+    let driver = Driver::new_hs(p.USB_OTG_HS, p.PM6, p.PM5, Irqs, &mut ep_out_buffer, config);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);

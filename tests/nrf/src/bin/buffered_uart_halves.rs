@@ -6,11 +6,12 @@
 mod common;
 
 use defmt::{assert_eq, *};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_futures::join::join;
 use embassy_nrf::buffered_uarte::{self, BufferedUarteRx, BufferedUarteTx};
 use embassy_nrf::{peripherals, uarte};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -30,21 +31,11 @@ async fn main(_spawner: Spawner) {
             peri!(p, UART1).reborrow(),
             peri!(p, PIN_A).reborrow(),
             irqs!(UART1_BUFFERED),
-            config.clone(),
             &mut tx_buffer,
+            config.clone(),
         );
 
-        let mut rx = BufferedUarteRx::new(
-            peri!(p, UART0).reborrow(),
-            p.TIMER0.reborrow(),
-            p.PPI_CH0.reborrow(),
-            p.PPI_CH1.reborrow(),
-            p.PPI_GROUP0.reborrow(),
-            irqs!(UART0_BUFFERED),
-            peri!(p, PIN_B).reborrow(),
-            config.clone(),
-            &mut rx_buffer,
-        );
+        let mut rx = buffered_uarte_rx_new!(p, peri!(p, PIN_B).reborrow(), config.clone(), &mut rx_buffer);
 
         let tx_fut = async {
             info!("tx initialized!");

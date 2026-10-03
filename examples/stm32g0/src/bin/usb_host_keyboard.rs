@@ -2,15 +2,16 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::gpio::{AfType, Level, Output, OutputType, Speed};
 use embassy_stm32::i2c::{self, I2c};
 use embassy_stm32::time::mhz;
 use embassy_stm32::{Config, bind_interrupts, dma, pac, peripherals, usb};
 use embassy_time::Timer;
-use embassy_usb_host::UsbHost;
 use embassy_usb_host::class::hid::HidHost;
-use {defmt_rtt as _, panic_probe as _};
+use embassy_usb_host::{BusRoute, BusState};
+use panic_probe as _;
 
 pub use crate::pac::rcc::vals::Mcosel;
 
@@ -75,20 +76,21 @@ async fn main(_spawner: Spawner) {
     debug!("TCPP03-M20 reg 1: {:02X}", read_buf[0]);
 
     // Create the USB host driver
-    let mut usbhost = usb::UsbHost::new(p.USB, Irqs, p.PA12, p.PA11);
+    let mut usbhost = usb::UsbHost::new(p.USB, p.PA12, p.PA11, Irqs);
     usbhost.start();
 
-    let mut host = UsbHost::new(usbhost);
+    static BUS_STATE: BusState = BusState::new();
+    let (mut bus_ctrl, bus) = embassy_usb_host::bus(usbhost, &BUS_STATE);
     info!("USB host initialized, waiting for device...");
 
     loop {
-        let speed = host.wait_for_connection().await;
+        let speed = bus_ctrl.wait_for_connection().await;
         info!("Device connected at speed {:?}", speed);
 
         let mut config_buf = [0u8; 256];
-        let result = host.enumerate(speed, &mut config_buf).await;
+        let result = bus.enumerate(BusRoute::Direct(speed), &mut config_buf).await;
 
-        let (dev_desc, addr, config_len) = match result {
+        let (enum_info, config_len) = match result {
             Ok(r) => r,
             Err(e) => {
                 error!("Enumeration failed: {:?}", e);
@@ -98,15 +100,10 @@ async fn main(_spawner: Spawner) {
 
         info!(
             "Enumerated: VID={:04x} PID={:04x} addr={}",
-            dev_desc.vendor_id, dev_desc.product_id, addr
+            enum_info.device_desc.vendor_id, enum_info.device_desc.product_id, enum_info.device_address
         );
 
-        let mut hid = match HidHost::new(
-            host.driver(),
-            &config_buf[..config_len],
-            addr,
-            dev_desc.max_packet_size0 as u16,
-        ) {
+        let mut hid = match HidHost::new(&bus, &config_buf[..config_len], &enum_info) {
             Ok(h) => h,
             Err(e) => {
                 error!("HID init failed: {:?}", e);

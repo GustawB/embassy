@@ -5,10 +5,11 @@
 #![no_main]
 
 use defmt::info;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_rp::gpio::{Input, Level, Pull};
 use embassy_time::{Duration, Instant, Timer, with_deadline};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 pub struct Debouncer<'a> {
     input: Input<'a>,
@@ -22,13 +23,13 @@ impl<'a> Debouncer<'a> {
 
     pub async fn debounce(&mut self) -> Level {
         loop {
-            let l1 = self.input.get_level();
+            let l1 = self.input.level();
 
             self.input.wait_for_any_edge().await;
 
             Timer::after(self.debounce).await;
 
-            let l2 = self.input.get_level();
+            let l2 = self.input.level();
             if l1 != l2 {
                 break l2;
             }
@@ -36,7 +37,7 @@ impl<'a> Debouncer<'a> {
     }
 }
 
-#[embassy_executor::main]
+#[embassy_executor::main(executor = "embassy_rp::executor::Executor", entry = "cortex_m_rt::entry")]
 async fn main(_spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let mut btn = Debouncer::new(Input::new(p.PIN_9, Pull::Up), Duration::from_millis(20));

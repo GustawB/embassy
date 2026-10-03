@@ -108,12 +108,13 @@ use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering, fence};
+use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicUsize, Ordering, fence};
 use core::task::{Context, Poll};
 
 use embassy_hal_internal::{Peri, PeripheralType};
 use maitake_sync::WaitCell;
 
+pub(crate) use crate::_generated::DmaRequest;
 use crate::clocks::enable_and_reset;
 use crate::clocks::periph_helpers::NoConfig;
 use crate::dma::sealed::SealedChannel;
@@ -124,6 +125,8 @@ use crate::pac::edma_tcd::{
 };
 use crate::pac::{self, Interrupt};
 use crate::peripherals::DMA0;
+#[cfg(feature = "mcxa5xx")]
+use crate::peripherals::DMA1;
 
 /// Initialize DMA controller (clock enabled, reset released, controller configured).
 ///
@@ -139,10 +142,26 @@ pub(crate) fn init() {
     pac::DMA0.mp_csr().modify(|w| {
         w.set_edbg(true);
         w.set_erca(true);
-        w.set_halt(Halt::NORMAL_OPERATION);
+        w.set_halt(Halt::NormalOperation);
         w.set_gclc(true);
         w.set_gmrc(true);
     });
+
+    // Enable DMA1 clock, release reset, and configure its management page.
+    // Without this, any access to the DMA1 TCD registers faults because the
+    // peripheral is unclocked and held in reset.
+    #[cfg(feature = "mcxa5xx")]
+    {
+        let _ = unsafe { enable_and_reset::<DMA1>(&NoConfig) };
+
+        pac::DMA1.mp_csr().modify(|w| {
+            w.set_edbg(true);
+            w.set_erca(true);
+            w.set_halt(Halt::NormalOperation);
+            w.set_gclc(true);
+            w.set_gmrc(true);
+        });
+    }
 
     // Enable all DMA request lines for non-secure access.
     #[cfg(all(feature = "mcxa5xx", feature = "dma-ipd-req"))]
@@ -203,9 +222,9 @@ impl WordSize {
     /// Convert to hardware SSIZE/DSIZE field value.
     pub const fn to_hw_size(self) -> Size {
         match self {
-            WordSize::OneByte => Size::EIGHT_BIT,
-            WordSize::TwoBytes => Size::SIXTEEN_BIT,
-            WordSize::FourBytes => Size::THIRTYTWO_BIT,
+            WordSize::OneByte => Size::EightBit,
+            WordSize::TwoBytes => Size::SixteenBit,
+            WordSize::FourBytes => Size::ThirtytwoBit,
         }
     }
 
@@ -287,6 +306,204 @@ pub enum Error {
     Overrun,
 }
 
+/// Selected buffer in a two-buffer ping-pong DMA transfer.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum PingPongSelector {
+    /// DMA buffer A selected.
+    BufferA,
+    /// DMA buffer B selected.
+    BufferB,
+}
+
+impl PingPongSelector {
+    const fn other(self) -> Self {
+        match self {
+            Self::BufferA => Self::BufferB,
+            Self::BufferB => Self::BufferA,
+        }
+    }
+}
+
+/// Ownership status of one ping-pong DMA buffer.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) enum BufferStatus {
+    /// Buffer is free for DMA to use.
+    Committed,
+    /// Buffer is granted to the peripheral driver and is not ready for DMA reuse.
+    Granted,
+}
+
+/// Snapshot of the ownership state for one ping-pong DMA channel.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub(crate) struct PingPongStatus {
+    /// Buffer currently selected for DMA writes.
+    pub(crate) current: PingPongSelector,
+    /// Ownership status of buffer A.
+    pub(crate) buffer_a_status: BufferStatus,
+    /// Ownership status of buffer B.
+    pub(crate) buffer_b_status: BufferStatus,
+    /// Sticky error set when DMA reuses an uncommitted buffer.
+    ///
+    /// Cleared only when the channel is stopped and configured again.
+    pub(crate) overrun_error: bool,
+}
+
+impl PingPongStatus {
+    const ACTIVE: u32 = 1 << 0;
+    const CURRENT_B: u32 = 1 << 1;
+    const BUFFER_A_GRANTED: u32 = 1 << 2;
+    const BUFFER_B_GRANTED: u32 = 1 << 3;
+    const OVERRUN: u32 = 1 << 4;
+
+    const fn new() -> Self {
+        Self {
+            current: PingPongSelector::BufferA,
+            buffer_a_status: BufferStatus::Committed,
+            buffer_b_status: BufferStatus::Committed,
+            overrun_error: false,
+        }
+    }
+
+    fn encode(self) -> u32 {
+        let mut value = Self::ACTIVE;
+        if self.current == PingPongSelector::BufferB {
+            value |= Self::CURRENT_B;
+        }
+        if self.buffer_a_status == BufferStatus::Granted {
+            value |= Self::BUFFER_A_GRANTED;
+        }
+        if self.buffer_b_status == BufferStatus::Granted {
+            value |= Self::BUFFER_B_GRANTED;
+        }
+        if self.overrun_error {
+            value |= Self::OVERRUN;
+        }
+        value
+    }
+
+    fn decode(value: u32) -> Option<Self> {
+        if value & Self::ACTIVE == 0 {
+            return None;
+        }
+
+        Some(Self {
+            current: if value & Self::CURRENT_B == 0 {
+                PingPongSelector::BufferA
+            } else {
+                PingPongSelector::BufferB
+            },
+            buffer_a_status: if value & Self::BUFFER_A_GRANTED == 0 {
+                BufferStatus::Committed
+            } else {
+                BufferStatus::Granted
+            },
+            buffer_b_status: if value & Self::BUFFER_B_GRANTED == 0 {
+                BufferStatus::Committed
+            } else {
+                BufferStatus::Granted
+            },
+            overrun_error: value & Self::OVERRUN != 0,
+        })
+    }
+
+    fn buffer_status(&self, buffer: PingPongSelector) -> BufferStatus {
+        match buffer {
+            PingPongSelector::BufferA => self.buffer_a_status,
+            PingPongSelector::BufferB => self.buffer_b_status,
+        }
+    }
+
+    fn set_buffer_status(&mut self, buffer: PingPongSelector, status: BufferStatus) {
+        match buffer {
+            PingPongSelector::BufferA => self.buffer_a_status = status,
+            PingPongSelector::BufferB => self.buffer_b_status = status,
+        }
+    }
+
+    /// Return the single buffer currently granted to the peripheral driver.
+    pub(crate) fn granted_buffer(&self) -> Result<Option<PingPongSelector>, Error> {
+        if self.overrun_error {
+            return Err(Error::Overrun);
+        }
+
+        match (self.buffer_a_status, self.buffer_b_status) {
+            (BufferStatus::Committed, BufferStatus::Committed) => Ok(None),
+            (BufferStatus::Granted, BufferStatus::Committed) => Ok(Some(PingPongSelector::BufferA)),
+            (BufferStatus::Committed, BufferStatus::Granted) => Ok(Some(PingPongSelector::BufferB)),
+            (BufferStatus::Granted, BufferStatus::Granted) => Err(Error::Overrun),
+        }
+    }
+
+    fn set_overrun(&mut self) {
+        self.overrun_error = true;
+    }
+
+    /// Grant the current buffer after hardware reaches its boundary.
+    ///
+    /// The observed hardware phase must agree with `current`. The current
+    /// buffer becomes granted and DMA moves to the other buffer, which must
+    /// already have been committed by the peripheral driver.
+    fn grant_completed(&mut self, observed_completed: PingPongSelector) -> Result<(), Error> {
+        if observed_completed != self.current {
+            self.set_overrun();
+            return Err(Error::Overrun);
+        }
+        self.set_buffer_status(observed_completed, BufferStatus::Granted);
+        let next = observed_completed.other();
+        if self.buffer_status(next) != BufferStatus::Committed {
+            self.set_overrun();
+            return Err(Error::Overrun);
+        }
+
+        self.current = next;
+        Ok(())
+    }
+
+    /// Return a granted buffer to DMA after its contents have been copied.
+    fn commit(&mut self, buffer: PingPongSelector) -> Result<(), Error> {
+        if self.overrun_error || self.buffer_status(buffer) != BufferStatus::Granted {
+            self.set_overrun();
+            return Err(Error::Overrun);
+        }
+
+        self.set_buffer_status(buffer, BufferStatus::Committed);
+        Ok(())
+    }
+}
+
+// Because mcxa2xx only has 1 DMA instance, we need to conditionally set the instance count.
+const DMA_INSTANCE_COUNT: usize = if cfg!(feature = "mcxa5xx") { 2 } else { 1 };
+const DMA_CHANNEL_COUNT: usize = 12;
+
+fn ping_pong_status(dma: usize, channel: usize) -> Option<PingPongStatus> {
+    let value = STATES[dma][channel].ping_pong_status.load(Ordering::Acquire);
+    PingPongStatus::decode(value)
+}
+
+fn set_ping_pong_status(dma: usize, channel: usize, status: Option<PingPongStatus>) {
+    let value = status.map(PingPongStatus::encode).unwrap_or(0);
+    STATES[dma][channel].ping_pong_status.store(value, Ordering::Release);
+}
+
+fn update_ping_pong_status(
+    dma: usize,
+    channel: usize,
+    update: impl Fn(&mut PingPongStatus) -> Result<(), Error>,
+) -> Result<(), Error> {
+    let state = &STATES[dma][channel].ping_pong_status;
+    let mut result = Ok(());
+
+    state
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            let mut status = PingPongStatus::decode(current)?;
+            result = update(&mut status);
+            Some(status.encode())
+        })
+        .map_err(|_| Error::Configuration)?;
+
+    result
+}
+
 /// An error that can occur if the parameters passed were invalid.
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -298,212 +515,14 @@ pub struct InvalidParameters;
 /// than this must be split into multiple DMA operations.
 pub const DMA_MAX_TRANSFER_SIZE: usize = 0x7FFF;
 
-/// DMA request sources
-///
-/// (from MCXA266 reference manual PDF attachment "DMA_Configuration.xml")
-#[derive(Clone, Copy, Debug)]
-#[repr(u8)]
-#[allow(dead_code)]
-#[cfg(feature = "mcxa2xx")]
-pub(crate) enum DmaRequest {
-    WUU0WakeUpEvent = 1,
-    CAN0 = 2,
-    LPI2C2Rx = 3,
-    LPI2C2Tx = 4,
-    LPI2C3Rx = 5,
-    LPI2C3Tx = 6,
-    I3C0Rx = 7,
-    I3C0Tx = 8,
-    LPI2C0Rx = 11,
-    LPI2C0Tx = 12,
-    LPI2C1Rx = 13,
-    LPI2C1Tx = 14,
-    LPSPI0Rx = 15,
-    LPSPI0Tx = 16,
-    LPSPI1Rx = 17,
-    LPSPI1Tx = 18,
-    LPUART0Rx = 21,
-    LPUART0Tx = 22,
-    LPUART1Rx = 23,
-    LPUART1Tx = 24,
-    LPUART2Rx = 25,
-    LPUART2Tx = 26,
-    LPUART3Rx = 27,
-    LPUART3Tx = 28,
-    LPUART4Rx = 29,
-    LPUART4Tx = 30,
-    Ctimer0M0 = 31,
-    Ctimer0M1 = 32,
-    Ctimer1M0 = 33,
-    Ctimer1M1 = 34,
-    Ctimer2M0 = 35,
-    Ctimer2M1 = 36,
-    Ctimer3M0 = 37,
-    Ctimer3M1 = 38,
-    Ctimer4M0 = 39,
-    Ctimer4M1 = 40,
-    FlexPWM0Capt0 = 41,
-    FlexPWM0Capt1 = 42,
-    FlexPWM0Capt2 = 43,
-    FlexPWM0Capt3 = 44,
-    FlexPWM0Val0 = 45,
-    FlexPWM0Val1 = 46,
-    FlexPWM0Val2 = 47,
-    FlexPWM0Val3 = 48,
-    LPTMR0CounterMatchEvent = 49,
-    ADC0FifoRequest = 51,
-    ADC1FifoRequest = 52,
-    CMP0 = 53,
-    CMP1 = 54,
-    CMP2 = 55,
-    DAC0FifoRequest = 56,
-    GPIO0PinEvent0 = 60,
-    GPIO1PinEvent0 = 61,
-    GPIO2PinEvent0 = 62,
-    GPIO3PinEvent0 = 63,
-    GPIO4PinEvent0 = 64,
-    QDC0 = 65,
-    QDC1 = 66,
-    FlexIO0SR0 = 71,
-    FlexIO0SR1 = 72,
-    FlexIO0SR2 = 73,
-    FlexIO0SR3 = 74,
-    FlexPWM1ReqCapt0 = 79,
-    FlexPWM1ReqCapt1 = 80,
-    FlexPWM1ReqCapt2 = 81,
-    FlexPWM1ReqCapt3 = 82,
-    FlexPWM1ReqVal0 = 83,
-    FlexPWM1ReqVal1 = 84,
-    FlexPWM1ReqVal2 = 85,
-    FlexPWM1ReqVal3 = 86,
-    CAN1 = 87,
-    LPUART5Rx = 102,
-    LPUART5Tx = 103,
-    MAU0MAU = 115,
-    SGI0ReqIdat = 119,
-    SGI0ReqOdat = 120,
-    ADC2FifoRequest = 123,
-    ADC3FifoRequest = 124,
-}
-
-/// DMA request sources
-///
-/// (from MCXA577 reference manual PDF attachment "DMA_Configuration.xml")
-#[derive(Clone, Copy, Debug)]
-#[repr(u8)]
-#[allow(dead_code)]
-#[cfg(feature = "mcxa5xx")]
-pub(crate) enum DmaRequest {
-    WUU0WakeUpEvent = 1,
-    CAN0 = 2,
-    LPI2C2Rx = 3,
-    LPI2C2Tx = 4,
-    LPI2C3Rx = 5,
-    LPI2C3Tx = 6,
-    I3C0Rx = 7,
-    I3C0Tx = 8,
-    I3C1Rx = 9,
-    I3C1Tx = 10,
-    LPI2C0Rx = 11,
-    LPI2C0Tx = 12,
-    LPI2C1Rx = 13,
-    LPI2C1Tx = 14,
-    LPSPI0Rx = 15,
-    LPSPI0Tx = 16,
-    LPSPI1Rx = 17,
-    LPSPI1Tx = 18,
-    LPSPI2Rx = 19,
-    LPSPI2Tx = 20,
-    LPUART0Rx = 21,
-    LPUART0Tx = 22,
-    LPUART1Rx = 23,
-    LPUART1Tx = 24,
-    LPUART2Rx = 25,
-    LPUART2Tx = 26,
-    LPUART3Rx = 27,
-    LPUART3Tx = 28,
-    LPUART4Rx = 29,
-    LPUART4Tx = 30,
-    Ctimer0M0 = 31,
-    Ctimer0M1 = 32,
-    Ctimer1M0 = 33,
-    Ctimer1M1 = 34,
-    Ctimer2M0 = 35,
-    Ctimer2M1 = 36,
-    Ctimer3M0 = 37,
-    Ctimer3M1 = 38,
-    Ctimer4M0 = 39,
-    Ctimer4M1 = 40,
-    LPTMR0CounterMatchEvent = 49,
-    ADC0FifoRequest = 51,
-    ADC1FifoRequest = 52,
-    CMP0 = 53,
-    DAC0FifoRequest = 56,
-    DAC1FifoRequest = 57,
-    GPIO5PinEvent0 = 59,
-    GPIO0PinEvent0 = 60,
-    GPIO1PinEvent0 = 61,
-    GPIO2PinEvent0 = 62,
-    GPIO3PinEvent0 = 63,
-    GPIO4PinEvent0 = 64,
-    TsiEndOfScan = 69,
-    TsiOutOfRange = 70,
-    FlexIO0SR0 = 71,
-    FlexIO0SR1 = 72,
-    FlexIO0SR2 = 73,
-    FlexIO0SR3 = 74,
-    CAN1 = 87,
-    EspiCh0 = 92,
-    EspiCh1 = 93,
-    LPI2C4Rx = 94,
-    LPI2C4Tx = 95,
-    LPSPI3Rx = 96,
-    LPSPI3Tx = 97,
-    LPSPI4Rx = 98,
-    LPSPI4Tx = 99,
-    LPSPI5Rx = 100,
-    LPSPI5Tx = 101,
-    LPUART5Rx = 102,
-    LPUART5Tx = 103,
-    I3C2Rx = 106,
-    I3C2Tx = 107,
-    I3C3Rx = 108,
-    I3C3Tx = 109,
-    FlexSPI0Rx = 110,
-    FlexSPI0Tx = 111,
-    ITRCTmprOut0 = 117,
-    SGI0ReqIdat = 119,
-    SGI0ReqOdat = 120,
-    Gpio0PinEvent1 = 132,
-    Gpio1PinEvent1 = 133,
-    Gpio2PinEvent1 = 134,
-    Gpio3PinEvent1 = 135,
-    Gpio4PinEvent1 = 136,
-    Gpio5PinEvent1 = 137,
-}
-
-impl DmaRequest {
-    /// Convert enumerated value into a raw integer
-    pub const fn number(self) -> u8 {
-        self as u8
-    }
-
-    /// Convert a raw integer into an enumerated value
-    ///
-    /// ## SAFETY
-    ///
-    /// The given number MUST be one of the defined variant, e.g. a number
-    /// derived from [`Self::number()`], otherwise it is immediate undefined behavior.
-    pub unsafe fn from_number_unchecked(num: u8) -> Self {
-        unsafe { core::mem::transmute(num) }
-    }
-}
-
-mod sealed {
+pub(crate) mod sealed {
     /// Sealed trait for DMA channels.
     pub trait SealedChannel {
+        /// The dma instance number
+        fn dma(&self) -> usize;
+
         /// Zero-based channel index into the TCD array.
-        fn index(&self) -> usize;
+        fn channel(&self) -> usize;
 
         /// Interrupt vector for this channel.
         fn interrupt(&self) -> crate::interrupt::Interrupt;
@@ -547,14 +566,19 @@ pub trait Channel: sealed::SealedChannel + PeripheralType + Into<AnyChannel> + '
 /// ```
 #[derive(Debug, Clone, Copy)]
 pub struct AnyChannel {
-    index: usize,
-    interrupt: Interrupt,
+    pub(crate) dma: u8,
+    pub(crate) channel: u8,
+    pub(crate) interrupt: Interrupt,
 }
 
 impl PeripheralType for AnyChannel {}
 impl sealed::SealedChannel for AnyChannel {
-    fn index(&self) -> usize {
-        self.index
+    fn dma(&self) -> usize {
+        self.dma as usize
+    }
+
+    fn channel(&self) -> usize {
+        self.channel as usize
     }
 
     fn interrupt(&self) -> Interrupt {
@@ -564,39 +588,37 @@ impl sealed::SealedChannel for AnyChannel {
 
 impl Channel for AnyChannel {}
 
+#[doc(hidden)]
+#[macro_export]
 /// Macro to implement Channel trait for a peripheral.
-macro_rules! impl_channel {
-    ($peri:ident, $index:expr, $irq:ident) => {
-        impl sealed::SealedChannel for crate::peripherals::$peri {
-            fn index(&self) -> usize {
-                $index
+macro_rules! impl_dma_channel {
+    ($peri:ident, $dma:expr, $channel:expr, $irq:ident) => {
+        impl $crate::dma::sealed::SealedChannel for $crate::peripherals::$peri {
+            fn dma(&self) -> usize {
+                $dma
             }
 
-            fn interrupt(&self) -> Interrupt {
-                Interrupt::$irq
+            fn channel(&self) -> usize {
+                $channel
+            }
+
+            fn interrupt(&self) -> nxp_pac::Interrupt {
+                nxp_pac::Interrupt::$irq
             }
         }
-        impl Channel for crate::peripherals::$peri {}
+        impl $crate::dma::Channel for $crate::peripherals::$peri {}
 
-        impl From<crate::peripherals::$peri> for AnyChannel {
-            fn from(_: crate::peripherals::$peri) -> Self {
-                AnyChannel {
-                    index: $index,
-                    interrupt: Interrupt::$irq,
+        impl From<$crate::peripherals::$peri> for $crate::dma::AnyChannel {
+            fn from(_: $crate::peripherals::$peri) -> Self {
+                $crate::dma::AnyChannel {
+                    dma: $dma,
+                    channel: $channel,
+                    interrupt: nxp_pac::Interrupt::$irq,
                 }
             }
         }
     };
 }
-
-impl_channel!(DMA0_CH0, 0, DMA0_CH0);
-impl_channel!(DMA0_CH1, 1, DMA0_CH1);
-impl_channel!(DMA0_CH2, 2, DMA0_CH2);
-impl_channel!(DMA0_CH3, 3, DMA0_CH3);
-impl_channel!(DMA0_CH4, 4, DMA0_CH4);
-impl_channel!(DMA0_CH5, 5, DMA0_CH5);
-impl_channel!(DMA0_CH6, 6, DMA0_CH6);
-impl_channel!(DMA0_CH7, 7, DMA0_CH7);
 
 /// Parameters used to configure a 'typical' DMA transfer in [DmaChannel::setup_typical].
 struct DmaTransferParameters<WSRC: Word, WDST: Word> {
@@ -621,6 +643,173 @@ struct DmaTransferParameters<WSRC: Word, WDST: Word> {
     software: bool,
     /// Public facing transfer options that might be relevant.
     options: TransferOptions,
+}
+
+/// A single operation in a peripheral transfer sequence for memory-to-peripheral writes.
+pub struct PeripheralWriteOperation<'buf> {
+    /// TCD memory that will be loaded into the DMA channel.
+    tcd: Tcd,
+    /// PhantomData to tie the lifetime of the operation to the source buffer.
+    _buffer: PhantomData<&'buf [u8]>,
+}
+
+impl<'buf> PeripheralWriteOperation<'buf> {
+    /// Create a new PeripheralWriteOperation for a memory-to-peripheral write.
+    ///
+    /// # Arguments
+    ///
+    /// `src` - Source buffer slice.
+    /// `dst` - Destination peripheral register pointer.
+    pub fn new<W: Word>(src: &'buf [W], dst: *mut W) -> Result<Self, InvalidParameters> {
+        if src.is_empty() || src.len() > DMA_MAX_TRANSFER_SIZE {
+            return Err(InvalidParameters);
+        }
+
+        Ok(Self {
+            tcd: Self::build_tcd(src, dst),
+            _buffer: PhantomData,
+        })
+    }
+
+    /// Create a sequence of write operations from `(src, dst)` pairs.
+    ///
+    /// # Arguments
+    ///
+    /// `ops` - An array of `(src, dst)` pairs, where `src` is a source buffer slice and `dst` is a destination peripheral register pointer.
+    pub fn new_sequence<W: Word, const N: usize>(
+        ops: [(&'buf [W], *mut W); N],
+    ) -> Result<[Self; N], InvalidParameters> {
+        const { assert!(N > 0, "Sequence must have at least one operation") };
+
+        // Validate parameters for each segment in the sequence
+        for (src, _) in &ops {
+            if src.is_empty() || src.len() > DMA_MAX_TRANSFER_SIZE {
+                return Err(InvalidParameters);
+            }
+        }
+
+        Ok(ops.map(|(src, dst)| Self {
+            tcd: Self::build_tcd(src, dst),
+            _buffer: PhantomData,
+        }))
+    }
+
+    /// Build a TCD for a peripheral write operation.
+    ///
+    /// # Arguments
+    ///
+    /// `src` - Source buffer slice.
+    /// `dst` - Destination peripheral register pointer.
+    fn build_tcd<W: Word>(src: &'buf [W], dst: *mut W) -> Tcd {
+        let size = W::size();
+        let byte_size = size.bytes();
+        let hw_size = size.to_hw_size() as u16;
+        let src_buffer_size = src.len() as u16;
+        Tcd {
+            saddr: src.as_ptr() as u32,
+            soff: byte_size as i16,
+            attr: (hw_size << 8) | hw_size,
+            nbytes: byte_size as u32,
+            slast: 0,
+            daddr: dst as u32,
+            doff: 0,
+            citer: src_buffer_size,
+            dlast_sga: 0,
+            csr: 0,
+            biter: src_buffer_size,
+        }
+    }
+}
+
+/// A single operation in a peripheral transfer sequence for peripheral-to-memory reads.
+pub struct PeripheralReadOperation<'buf> {
+    /// TCD memory that will be loaded into the DMA channel.
+    tcd: Tcd,
+    /// PhantomData to tie the lifetime of the operation to the destination buffer.
+    _buffer: PhantomData<&'buf mut [u8]>,
+}
+
+impl<'buf> PeripheralReadOperation<'buf> {
+    /// Create a new PeripheralReadOperation for a peripheral-to-memory read.
+    ///
+    /// # Arguments
+    ///
+    /// `src` - Source peripheral register pointer.
+    /// `dst` - Destination buffer slice.
+    pub fn new<W: Word>(src: *const W, dst: &'buf mut [W]) -> Result<Self, InvalidParameters> {
+        if dst.is_empty() || dst.len() > DMA_MAX_TRANSFER_SIZE {
+            return Err(InvalidParameters);
+        }
+
+        Ok(Self {
+            tcd: Self::build_tcd(src, dst),
+            _buffer: PhantomData,
+        })
+    }
+
+    /// Create a sequence of read operations from `(src, dst)` pairs.
+    ///
+    /// # Arguments
+    ///
+    /// `ops` - An array of `(src, dst)` pairs, where `src` is a source peripheral register pointer and `dst` is a destination buffer slice.
+    pub fn new_sequence<W: Word, const N: usize>(
+        ops: [(*const W, &'buf mut [W]); N],
+    ) -> Result<[Self; N], InvalidParameters> {
+        // Validate parameters for each segment in the sequence
+        for (_, dst) in &ops {
+            if dst.is_empty() || dst.len() > DMA_MAX_TRANSFER_SIZE {
+                return Err(InvalidParameters);
+            }
+        }
+
+        Ok(ops.map(|(src, dst)| Self {
+            tcd: Self::build_tcd(src, dst),
+            _buffer: PhantomData,
+        }))
+    }
+
+    /// Build a TCD for a peripheral read operation.
+    ///
+    /// # Arguments
+    ///
+    /// `src` - Source peripheral register pointer.
+    /// `dst` - Destination buffer slice.
+    fn build_tcd<W: Word>(src: *const W, dst: &'buf mut [W]) -> Tcd {
+        let size = W::size();
+        let byte_size = size.bytes();
+        let hw_size = size.to_hw_size() as u16;
+        let dst_buffer_size = dst.len() as u16;
+        Tcd {
+            saddr: src as u32,
+            soff: 0,
+            attr: (hw_size << 8) | hw_size,
+            nbytes: byte_size as u32,
+            slast: 0,
+            daddr: dst.as_mut_ptr() as u32,
+            doff: byte_size as i16,
+            citer: dst_buffer_size,
+            dlast_sga: 0,
+            csr: 0,
+            biter: dst_buffer_size,
+        }
+    }
+}
+
+/// Internal access to TCD storage used when constructing an SG chain.
+trait TcdStorage {
+    fn tcd_mut(&mut self) -> &mut Tcd;
+}
+
+impl TcdStorage for PeripheralWriteOperation<'_> {
+    fn tcd_mut(&mut self) -> &mut Tcd {
+        &mut self.tcd
+    }
+}
+
+impl TcdStorage for PeripheralReadOperation<'_> {
+    fn tcd_mut(&mut self) -> &mut Tcd {
+        &mut self.tcd
+    }
 }
 
 /// DMA channel driver.
@@ -653,15 +842,25 @@ impl DmaChannel<'_> {
 
     /// Channel index in the EDMA_0_TCD0 array.
     #[inline]
-    pub(crate) fn index(&self) -> usize {
-        self.channel.index()
+    pub(crate) fn channel(&self) -> usize {
+        self.channel.channel()
+    }
+
+    /// Dma index
+    #[inline]
+    pub(crate) fn dma(&self) -> usize {
+        self.channel.dma()
     }
 
     /// Return a reference to the underlying TCD register block.
     #[inline]
     pub(crate) fn tcd(&self) -> pac::edma_tcd::Tcd {
-        // Safety: MCXA276 has a single eDMA instance
-        pac::EDMA_0_TCD.tcd(self.channel.index())
+        match self.dma() {
+            0 => pac::EDMA_0_TCD.tcd(self.channel.channel()),
+            #[cfg(feature = "mcxa5xx")]
+            1 => pac::EDMA_1_TCD.tcd(self.channel.channel()),
+            _ => unreachable!(),
+        }
     }
 
     /// set a manual callback to be called AFTER the DMA interrupt is processed. Will be called in the DMA interrupt
@@ -672,7 +871,7 @@ impl DmaChannel<'_> {
     pub(crate) unsafe fn set_callback(&mut self, f: fn()) {
         // See https://doc.rust-lang.org/std/primitive.fn.html#casting-to-and-from-integers
         let cb = f as *mut ();
-        CALLBACKS[self.index()].store(cb, Ordering::Release);
+        CALLBACKS[self.dma()][self.channel()].store(cb, Ordering::Release);
     }
 
     /// Unset the callback, causing no method to be called after DMA completion.
@@ -680,12 +879,42 @@ impl DmaChannel<'_> {
     /// SAFETY: This must only be called on an owned DmaChannel, as there is only a single
     /// callback slot, and calling this will invalidate any previously set callbacks.
     pub(crate) unsafe fn clear_callback(&mut self) {
-        CALLBACKS[self.index()].store(core::ptr::null_mut(), Ordering::Release);
+        CALLBACKS[self.dma()][self.channel()].store(core::ptr::null_mut(), Ordering::Release);
     }
 
     /// Access TCD DADDR field
     pub(crate) fn daddr(&self) -> u32 {
         self.tcd().tcd_daddr().read().daddr()
+    }
+
+    /// Return the current ping-pong ownership state for this channel.
+    pub(crate) fn ping_pong_status(&self) -> Option<PingPongStatus> {
+        ping_pong_status(self.dma(), self.channel())
+    }
+
+    /// Return whether an unhandled ping-pong boundary is currently pending.
+    ///
+    /// The DMA ISR clears this latch, so callers detecting a boundary across a
+    /// non-atomic operation must also compare ping-pong status snapshots.
+    pub(crate) fn ping_pong_boundary_pending(&self) -> bool {
+        self.tcd().ch_int().read().int()
+    }
+
+    /// Commit a completed buffer after the peripheral driver has copied it.
+    ///
+    /// Committing a buffer that is not currently granted, or committing after the
+    /// state has already gone sticky-overrun, stops hardware requests.
+    pub(crate) fn commit_ping_pong_buffer(&self, buffer: PingPongSelector) -> Result<(), Error> {
+        fence(Ordering::Release);
+        let result = update_ping_pong_status(self.dma(), self.channel(), |status| status.commit(buffer));
+        if result.is_err() {
+            // Stop accepting requests immediately. The peripheral driver will
+            // disable its request source and fully drain ACTIVE in its ISR.
+            unsafe {
+                self.disable_request();
+            }
+        }
+        result
     }
 
     fn clear_tcd(t: &pac::edma_tcd::Tcd) {
@@ -713,8 +942,8 @@ impl DmaChannel<'_> {
     #[inline]
     fn set_major_loop_nbytes_without_minor(t: &pac::edma_tcd::Tcd, count: u32) {
         t.tcd_nbytes_mloffno().write(|w| {
-            w.set_smloe(TcdNbytesMloffnoSmloe::OFFSET_NOT_APPLIED);
-            w.set_dmloe(TcdNbytesMloffnoDmloe::OFFSET_NOT_APPLIED);
+            w.set_smloe(TcdNbytesMloffnoSmloe::OffsetNotApplied);
+            w.set_dmloe(TcdNbytesMloffnoDmloe::OffsetNotApplied);
             w.set_nbytes(count)
         });
     }
@@ -759,8 +988,8 @@ impl DmaChannel<'_> {
     #[inline]
     fn set_fixed_priority(t: &pac::edma_tcd::Tcd, p: Priority) {
         t.ch_pri().write(|w| {
-            w.set_dpa(Dpa::SUSPEND);
-            w.set_ecp(Ecp::SUSPEND);
+            w.set_dpa(Dpa::Suspend);
+            w.set_ecp(Ecp::Suspend);
             w.set_apl(p as u8);
         });
     }
@@ -812,9 +1041,10 @@ impl DmaChannel<'_> {
     /// Requires that the source/destination buffers remain valid for the duration
     /// of the transfer.
     unsafe fn setup_transfers<WSRC: Word, WDST: Word>(&self, params: DmaTransferParameters<WSRC, WDST>) {
-        let byte_count = (params.dst_count as usize * WDST::size().bytes()) as u32;
+        let byte_count = (params.dst_count * WDST::size().bytes()) as u32;
 
         let t = self.tcd();
+        self.prepare_regular_transfer();
 
         // Reset channel state - clear DONE, disable requests, clear errors
         Self::reset_channel_state(&t);
@@ -881,20 +1111,20 @@ impl DmaChannel<'_> {
             w.set_intmajor(params.options.complete_transfer_interrupt);
             w.set_inthalf(params.options.half_transfer_interrupt);
             w.set_start(if params.software {
-                Start::CHANNEL_STARTED
+                Start::ChannelStarted
             } else {
-                Start::CHANNEL_NOT_STARTED
+                Start::ChannelNotStarted
             });
-            w.set_esg(Esg::NORMAL_FORMAT);
+            w.set_esg(Esg::NormalFormat);
             w.set_majorelink(false);
             w.set_eeop(false);
             w.set_esda(false);
-            w.set_bwc(Bwc::NO_STALL);
+            w.set_bwc(Bwc::NoStall);
 
             w.set_dreq(if params.circular {
-                Dreq::CHANNEL_NOT_AFFECTED // Don't clear ERQ on complete (circular)
+                Dreq::ChannelNotAffected // Don't clear ERQ on complete (circular)
             } else {
-                Dreq::ERQ_FIELD_CLEAR // Auto-disable request after major loop
+                Dreq::ErqFieldClear // Auto-disable request after major loop
             });
         });
 
@@ -1039,7 +1269,11 @@ impl DmaChannel<'_> {
         peri_addr: *mut W,
         options: TransferOptions,
     ) -> Result<Transfer<'_>, InvalidParameters> {
-        unsafe { self.setup_write_to_peripheral(buf, peri_addr, false, options)? };
+        unsafe {
+            self.setup_write_to_peripheral(buf, peri_addr, false, options)?;
+            self.enable_request();
+        };
+
         Ok(Transfer::new(self.reborrow()))
     }
 
@@ -1064,7 +1298,194 @@ impl DmaChannel<'_> {
         buf: &mut [W],
         options: TransferOptions,
     ) -> Result<Transfer<'_>, InvalidParameters> {
-        unsafe { self.setup_read_from_peripheral(peri_addr, buf, false, options)? };
+        unsafe {
+            self.setup_read_from_peripheral(peri_addr, buf, false, options)?;
+            self.enable_request();
+        };
+
+        Ok(Transfer::new(self.reborrow()))
+    }
+
+    /// Common function to set up a sequence of DMA transfer operations.
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence` - Sequence of DMA transfer operations to chain together.
+    ///
+    /// # Safety
+    /// - The sequence storage must not be moved, dropped or modified for the duration of the transfer.
+    /// - The source/destination buffers in the sequence must remain valid for the duration of the transfer.
+    /// - Every register's address in the sequence must be valid for read/writes.
+    /// - All operations must be compatible with the configured DMA request
+    unsafe fn setup_sequence<T: TcdStorage>(&mut self, sequence: &mut [T]) -> Result<(), InvalidParameters> {
+        if sequence.is_empty() {
+            return Err(InvalidParameters);
+        }
+
+        // Link the peripheral-paced TCDs. Intermediate TCDs only load the next
+        // descriptor; the final TCD disables requests and raises completion.
+        let mut remaining = &mut *sequence;
+        while let Some((current, tail)) = remaining.split_first_mut() {
+            let mut csr = TcdCsr(0);
+
+            let current_tcd = current.tcd_mut();
+            if let Some(next) = tail.first_mut() {
+                // For all but the last TCD, set dlast_sga to point to the next TCD in the chain.
+                let next_tcd = next.tcd_mut();
+                current_tcd.dlast_sga = next_tcd as *const Tcd as i32;
+
+                // Set ESG=ScatterGatherFormat for all but the last TCD to enable chaining.
+                csr.set_esg(Esg::ScatterGatherFormat);
+            } else {
+                // Last TCD in the sequence, no next TCD.
+                current_tcd.dlast_sga = 0;
+
+                // For the last TCD, clear DREQ to auto-disable requests on completion.
+                csr.set_dreq(Dreq::ErqFieldClear);
+                // Enable INTMAJOR to fire a completion interrupt when the last TCD finishes.
+                csr.set_intmajor(true);
+            }
+
+            current_tcd.csr = csr.0;
+            remaining = tail;
+        }
+
+        // Reset channel state - clear DONE, disable requests, clear errors
+        // This ensures the channel is in a clean state before loading the TCD
+        Self::reset_channel_state(&self.tcd());
+        self.prepare_peripheral_scatter_gather();
+
+        // Ensure the completed in-memory chain is visible before loading its head.
+        fence(Ordering::Release);
+
+        let head = sequence.first_mut().ok_or(InvalidParameters)?;
+        unsafe {
+            self.load_tcd(head.tcd_mut());
+        }
+
+        // Memory barrier before enabling request
+        fence(Ordering::Release);
+
+        Ok(())
+    }
+
+    /// Configure a memory-to-peripheral scatter-gather sequence without starting it.
+    ///
+    /// This chains and loads the sequence's TCDs into the channel but does NOT
+    /// return a Transfer object. The caller is responsible for:
+    /// 1. Enabling the peripheral's DMA request
+    /// 2. Calling `enable_request()` to start the transfer
+    /// 3. Polling `is_done()` or using interrupts to detect completion
+    /// 4. Calling `disable_request()`, `clear_done()`, `clear_interrupt()` for cleanup
+    ///
+    /// Use this when you need manual control over the DMA lifecycle (e.g., in
+    /// peripheral drivers that have their own completion polling).
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence` - Sequence of peripheral write operations to chain together.
+    ///
+    /// # Safety
+    ///
+    /// - The sequence storage must not be moved, dropped or modified for the duration of the transfer.
+    /// - Every destination address in the sequence must be valid for writes.
+    /// - All operations must be compatible with the configured DMA request
+    pub(crate) unsafe fn setup_write_to_peripheral_scatter_gather(
+        &mut self,
+        sequence: &mut [PeripheralWriteOperation<'_>],
+    ) -> Result<(), InvalidParameters> {
+        if sequence.is_empty() {
+            return Err(InvalidParameters);
+        }
+
+        unsafe { self.setup_sequence(sequence) }
+    }
+
+    /// Start a memory-to-peripheral scatter-gather sequence.
+    ///
+    /// This chains and loads the sequence, then enables the channel request (ERQ) and
+    /// returns a [`Transfer`]. The caller is still responsible for enabling the
+    /// peripheral's own DMA request so it actually drives the channel.
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence` - Sequence of peripheral write operations to chain together.
+    ///
+    /// # Safety
+    ///
+    /// - Every destination address in the sequence must be valid for writes.
+    /// - All operations must be compatible with the configured DMA request.
+    /// - If the returned transfer is forgotten, the sequence must remain valid until the transfer
+    ///   completes.
+    pub unsafe fn write_to_peripheral_scatter_gather<'seq>(
+        &'seq mut self,
+        sequence: &'seq mut [PeripheralWriteOperation<'_>],
+    ) -> Result<Transfer<'seq>, InvalidParameters> {
+        unsafe {
+            self.setup_write_to_peripheral_scatter_gather(sequence)?;
+            self.enable_request();
+        }
+
+        Ok(Transfer::new(self.reborrow()))
+    }
+
+    /// Configure a peripheral-to-memory scatter-gather sequence without starting it.
+    ///
+    /// This chains and loads the sequence's TCDs into the channel but does NOT
+    /// return a Transfer object. The caller is responsible for:
+    /// 1. Enabling the peripheral's DMA request
+    /// 2. Calling `enable_request()` to start the transfer
+    /// 3. Polling `is_done()` or using interrupts to detect completion
+    /// 4. Calling `disable_request()`, `clear_done()`, `clear_interrupt()` for cleanup
+    ///
+    /// Use this when you need manual control over the DMA lifecycle (e.g., in
+    /// peripheral drivers that have their own completion polling).
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence` - Sequence of peripheral read operations to chain together.
+    ///
+    /// # Safety
+    ///
+    /// - The sequence storage must not be moved, dropped or modified for the duration of the transfer.
+    /// - Every source address in the sequence must be valid for reads.
+    /// - All operations must be compatible with the configured DMA request
+    pub(crate) unsafe fn setup_read_from_peripheral_scatter_gather(
+        &mut self,
+        sequence: &mut [PeripheralReadOperation<'_>],
+    ) -> Result<(), InvalidParameters> {
+        if sequence.is_empty() {
+            return Err(InvalidParameters);
+        }
+
+        unsafe { self.setup_sequence(sequence) }
+    }
+
+    /// Start a peripheral-to-memory scatter-gather sequence.
+    ///
+    /// This chains and loads the sequence, then enables the channel request (ERQ) and
+    /// returns a [`Transfer`]. The caller is still responsible for enabling the
+    /// peripheral's own DMA request so it actually drives the channel.
+    ///
+    /// # Arguments
+    ///
+    /// * `sequence` - Sequence of peripheral read operations to chain together.
+    ///
+    /// # Safety
+    ///
+    /// - Every source address in the sequence must be valid for reads.
+    /// - All operations must be compatible with the configured DMA request.
+    /// - If the returned transfer is forgotten, the sequence must remain valid and inaccessible
+    ///   until the transfer completes.
+    pub unsafe fn read_from_peripheral_scatter_gather<'seq>(
+        &'seq mut self,
+        sequence: &'seq mut [PeripheralReadOperation<'_>],
+    ) -> Result<Transfer<'seq>, InvalidParameters> {
+        unsafe {
+            self.setup_read_from_peripheral_scatter_gather(sequence)?;
+            self.enable_request();
+        }
+
         Ok(Transfer::new(self.reborrow()))
     }
 
@@ -1151,7 +1572,7 @@ impl DmaChannel<'_> {
     /// * `buf` - Source buffer to write from
     /// * `peri_addr` - Peripheral register address
     /// * `software` - Use software start for the transfer; otherwise use hardware ERQ to drive the transfer.
-    ///                Should be `false` unless your peripheral does not support hardware ERQ.
+    ///   Should be `false` unless your peripheral does not support hardware ERQ.
     /// * `enable_interrupt` - Whether to enable interrupt on completion
     ///
     /// # Safety
@@ -1202,7 +1623,7 @@ impl DmaChannel<'_> {
     /// * `peri_addr` - Peripheral register address
     /// * `buf` - Destination buffer to read into
     /// * `software` - Use software start for the transfer; otherwise use hardware ERQ to drive the transfer.
-    ///                Should be `false` unless your peripheral does not support hardware ERQ.
+    ///   Should be `false` unless your peripheral does not support hardware ERQ.
     /// * `enable_interrupt` - Whether to enable interrupt on completion
     ///
     /// # Safety
@@ -1297,10 +1718,106 @@ impl DmaChannel<'_> {
         });
     }
 
-    /// Return true if the channel's DONE flag is set.
-    pub(crate) fn is_done(&self) -> bool {
+    /// Abort the transfer.
+    ///
+    /// When this returns, DMA can no longer access the transfer's buffers or
+    /// descriptors and the channel completion state has been cleared. A wake
+    /// stored in the `WaitCell` before aborting may remain. This is fine
+    /// because a wake only prompts the waiter to recheck completion state;
+    /// it does not indicate completion by itself.
+    ///
+    /// With IRQs masked we:
+    /// 1. Clear `ERQ`/`EARQ` so no further service requests are issued.
+    /// 2. Spin until `CH_CSR.ACTIVE` clears, so any in-flight minor loop
+    ///    or software-triggered transfer drains.
+    /// 3. Clear `CH_CSR.DONE` and `CH_INT.INT` (both W1C) bookkeeping.
+    /// 4. Unpend the channel's IRQ in the NVIC so a queued dispatch is
+    ///    dropped on the floor instead of running redundantly after CS
+    ///    exit.
+    pub(crate) fn stop(&self) {
         let t = self.tcd();
-        t.ch_csr().read().done()
+        let irq = self.channel.interrupt();
+
+        critical_section::with(|_| {
+            // 1. Stop accepting new requests.
+            t.ch_csr().modify(|w| {
+                w.set_erq(false);
+                w.set_earq(false);
+            });
+
+            // 2. Mask interrupts so we don't have to worry about the
+            // IRQ firing while we're in the middle of the shutdown
+            // sequence.
+            t.tcd_csr().modify(|w| {
+                w.set_intmajor(false);
+                w.set_inthalf(false);
+            });
+
+            // 3. Drop any IRQ the hardware queued in the NVIC while we
+            //    were masked.
+            cortex_m::peripheral::NVIC::unpend(irq);
+        });
+
+        // 4. Wait for any in-flight minor loop / SW-triggered transfer
+        //    to drain. Bounded by the size of one minor loop / SW
+        //    transfer this driver issues (microseconds at most).
+        while t.ch_csr().read().active() {
+            core::hint::spin_loop();
+        }
+
+        // 5. Clear completion bookkeeping (W1C).
+        t.ch_int().write(|w| w.set_int(true));
+        t.ch_csr().modify(|w| w.set_done(true));
+        let state = &STATES[self.dma()][self.channel()];
+        state.peripheral_scatter_gather_active.store(false, Ordering::Release);
+        state.peripheral_scatter_gather_done.store(false, Ordering::Release);
+        set_ping_pong_status(self.dma(), self.channel(), None);
+
+        fence(Ordering::SeqCst);
+    }
+
+    /// Return true if the current transfer has completed.
+    ///
+    /// Regular transfers use the hardware DONE flag. Peripheral-paced SG uses
+    /// a completion latch set by its final-only interrupt.
+    pub(crate) fn is_done(&self) -> bool {
+        let state = &STATES[self.dma()][self.channel()];
+        if state.peripheral_scatter_gather_active.load(Ordering::Acquire) {
+            self.is_peripheral_scatter_gather_done(state)
+        } else {
+            self.tcd().ch_csr().read().done()
+        }
+    }
+
+    fn is_peripheral_scatter_gather_done(&self, state: &State) -> bool {
+        if state.peripheral_scatter_gather_done.load(Ordering::Acquire) {
+            return true;
+        }
+
+        let interrupted = self.tcd().ch_int().read().int();
+        if interrupted {
+            state.peripheral_scatter_gather_done.store(true, Ordering::Release);
+        }
+
+        // Observe a peripheral SG ISR that latched final completion and cleared
+        // CH_INT concurrently with the checks above.
+        state.peripheral_scatter_gather_done.load(Ordering::Acquire)
+    }
+
+    /// Reset the channel state for a regular transfer.
+    fn prepare_regular_transfer(&self) {
+        let state = &STATES[self.dma()][self.channel()];
+        state.peripheral_scatter_gather_active.store(false, Ordering::Release);
+        state.peripheral_scatter_gather_done.store(false, Ordering::Release);
+        set_ping_pong_status(self.dma(), self.channel(), None);
+    }
+
+    /// Select final-interrupt completion tracking for peripheral-paced SG.
+    fn prepare_peripheral_scatter_gather(&self) {
+        let state = &STATES[self.dma()][self.channel()];
+        state.peripheral_scatter_gather_done.store(false, Ordering::Release);
+        state.peripheral_scatter_gather_active.store(true, Ordering::Release);
+        set_ping_pong_status(self.dma(), self.channel(), None);
     }
 
     /// Clear the DONE flag for this channel.
@@ -1314,6 +1831,9 @@ impl DmaChannel<'_> {
     pub(crate) unsafe fn clear_done(&self) {
         let t = self.tcd();
         t.ch_csr().modify(|w| w.set_done(true));
+        STATES[self.dma()][self.channel()]
+            .peripheral_scatter_gather_done
+            .store(false, Ordering::Release);
     }
 
     /// Clear the channel interrupt flag (CH_INT.INT).
@@ -1334,12 +1854,12 @@ impl DmaChannel<'_> {
     #[allow(unused)]
     pub(crate) unsafe fn trigger_start(&self) {
         let t = self.tcd();
-        t.tcd_csr().modify(|w| w.set_start(Start::CHANNEL_STARTED));
+        t.tcd_csr().modify(|w| w.set_start(Start::ChannelStarted));
     }
 
     /// Get the wait cell for this channel
     pub(crate) fn wait_cell(&self) -> &'static WaitCell {
-        &STATES[self.channel.index()].waker
+        &STATES[self.channel.dma()][self.channel.channel()].waker
     }
 
     /// Enable the interrupt for this channel in the NVIC.
@@ -1505,6 +2025,13 @@ struct State {
     waker: WaitCell,
     /// WaitCell for half-transfer interrupt
     half_waker: WaitCell,
+    /// Packed ping-pong ownership state shared by DMA and peripheral ISRs.
+    /// Zero means the channel is not configured for ping-pong operation.
+    ping_pong_status: AtomicU32,
+    /// Whether this channel currently contains a peripheral-paced SG sequence.
+    peripheral_scatter_gather_active: AtomicBool,
+    /// Set when final peripheral-paced SG completion is observed.
+    peripheral_scatter_gather_done: AtomicBool,
 }
 
 impl State {
@@ -1512,18 +2039,22 @@ impl State {
         Self {
             waker: WaitCell::new(),
             half_waker: WaitCell::new(),
+            ping_pong_status: AtomicU32::new(0),
+            peripheral_scatter_gather_active: AtomicBool::new(false),
+            peripheral_scatter_gather_done: AtomicBool::new(false),
         }
     }
 }
 
-static STATES: [State; 8] = [const { State::new() }; 8];
+static STATES: [[State; DMA_CHANNEL_COUNT]; DMA_INSTANCE_COUNT] =
+    [const { [const { State::new() }; DMA_CHANNEL_COUNT] }; DMA_INSTANCE_COUNT];
 
-pub(crate) fn waker(idx: usize) -> &'static WaitCell {
-    &STATES[idx].waker
+pub(crate) fn waker(dma: usize, channel: usize) -> &'static WaitCell {
+    &STATES[dma][channel].waker
 }
 
-pub(crate) fn half_waker(idx: usize) -> &'static WaitCell {
-    &STATES[idx].half_waker
+pub(crate) fn half_waker(dma: usize, channel: usize) -> &'static WaitCell {
+    &STATES[dma][channel].half_waker
 }
 
 // ============================================================================
@@ -1587,7 +2118,7 @@ impl<'a> Transfer<'a> {
         use core::future::poll_fn;
 
         poll_fn(|cx| {
-            let state = &STATES[self.channel.index()];
+            let state = &STATES[self.channel.dma()][self.channel.channel()];
 
             // Register the half-transfer waker
             let _ = state.half_waker.poll_wait(cx);
@@ -1620,23 +2151,9 @@ impl<'a> Transfer<'a> {
         .await
     }
 
-    /// Abort the transfer.
+    /// Abort the transfer and leave the channel ready for reuse.
     fn abort(&mut self) {
-        let t = self.channel.tcd();
-
-        // Disable channel requests
-        t.ch_csr().modify(|w| {
-            w.set_erq(false);
-            w.set_earq(false);
-        });
-
-        // Clear any pending interrupt
-        t.ch_int().write(|w| w.set_int(true));
-
-        // Clear DONE flag
-        t.ch_csr().modify(|w| w.set_done(true));
-
-        fence(Ordering::SeqCst);
+        self.channel.stop();
     }
 }
 
@@ -1644,7 +2161,7 @@ impl<'a> Transfer<'a> {
 ///
 /// Each error variant can be queried separately, or all errors can be iterated by using [TransferErrors::into_iter].
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
-#[derive(Copy, Clone, Debug)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TransferErrors(u8);
 
 /// Iterator to extract all [TransferError]s using [TransferErrors::into_iter].
@@ -1786,38 +2303,42 @@ impl<'a> Future for Transfer<'a> {
     type Output = Result<(), TransferErrors>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let _ = STATES[self.channel.index()].waker.poll_wait(cx);
-
-        if self.channel.is_done() {
-            // Ensure all DMA writes are visible before returning
-            fence(Ordering::Acquire);
-
-            let es = self.channel.tcd().ch_es().read();
-            if es.err() {
-                // Currently, all error fields are in the lowest 8 bits, as-casting truncates
-                let errs = es.0 as u8;
-                Poll::Ready(Err(TransferErrors(errs)))
-            } else {
-                Poll::Ready(Ok(()))
+        // We must register our waker even if the WaitCell currently has a
+        // stale WOKEN bit set (e.g. from a previously-cancelled transfer's
+        // late completion IRQ). `poll_wait` only registers the waker when
+        // it would return `Pending`; if it consumes a stored wake it
+        // returns `Ready(_)` *without* registering. Loop until the waker
+        // is actually registered (poll_wait returns Pending) or until the
+        // hardware reports the transfer is complete.
+        loop {
+            if self.channel.is_done() {
+                // Ensure all DMA writes are visible before returning
+                fence(Ordering::Acquire);
+                let es = self.channel.tcd().ch_es().read();
+                return if es.err() {
+                    Poll::Ready(Err(TransferErrors(es.0 as u8)))
+                } else {
+                    Poll::Ready(Ok(()))
+                };
             }
-        } else {
-            Poll::Pending
+
+            match STATES[self.channel.dma()][self.channel.channel()].waker.poll_wait(cx) {
+                Poll::Pending => return Poll::Pending,
+                // Consumed a stale wake; loop and re-check is_done, then
+                // try registering the waker again on the next iteration.
+                Poll::Ready(_) => continue,
+            }
         }
     }
 }
 
 impl<'a> Drop for Transfer<'a> {
     fn drop(&mut self) {
-        // Only abort if the transfer is still running
-        // If already complete, no need to abort
-        if self.is_running() {
-            self.abort();
-
-            // Wait for abort to complete
-            while self.is_running() {
-                core::hint::spin_loop();
-            }
-        }
+        // `abort` leaves the channel quiescent and clears all completion
+        // bookkeeping (DONE/INT/NVIC/WaitCell) so the next user of this
+        // channel starts from a clean slate. Safe to call unconditionally;
+        // it's cheap when the transfer is already complete.
+        self.abort();
 
         fence(Ordering::Release);
     }
@@ -1985,7 +2506,7 @@ impl<'channel, 'buf, W: Word> RingBuffer<'channel, 'buf, W> {
             }
 
             // Register wakers for both half and complete interrupts
-            let state = &STATES[self.channel.index()];
+            let state = &STATES[self.channel.dma()][self.channel.channel()];
             let _ = state.waker.poll_wait(cx);
             let _ = state.half_waker.poll_wait(cx);
 
@@ -2060,6 +2581,92 @@ impl<W: Word> Drop for RingBuffer<'_, '_, W> {
 }
 
 impl<'a> DmaChannel<'a> {
+    /// Configure a peripheral-paced circular read with two DMA-owned halves.
+    ///
+    /// The DMA ISR grants each completed buffer to the peripheral driver. The
+    /// driver must call [`DmaChannel::commit_ping_pong_buffer`] after copying it,
+    /// before DMA reaches the next buffer boundary. Failure to do so sets the
+    /// sticky overrun field in [`PingPongStatus`] and stops hardware requests.
+    /// The even buffer length becomes the major-loop iteration count; its midpoint
+    /// raises the Buffer A interrupt and major completion raises the Buffer B interrupt.
+    ///
+    /// # Safety
+    ///
+    /// - `peri_addr` must remain valid while the transfer is active.
+    /// - `buf` must remain valid and inaccessible through normal Rust references
+    ///   until the channel is stopped.
+    /// - The caller must disable the peripheral request source and stop the
+    ///   channel before releasing or reusing `buf`.
+    pub(crate) unsafe fn setup_ping_pong_read_from_peripheral<W: Word>(
+        &mut self,
+        peri_addr: *const W,
+        buf: &mut [W],
+        priority: Priority,
+    ) -> Result<(), InvalidParameters> {
+        if buf.len() < 2 || !buf.len().is_multiple_of(2) || buf.len() > DMA_MAX_TRANSFER_SIZE {
+            return Err(InvalidParameters);
+        }
+
+        unsafe {
+            self.setup_circular_read_from_peripheral(
+                peri_addr,
+                buf,
+                false,
+                TransferOptions {
+                    half_transfer_interrupt: true,
+                    complete_transfer_interrupt: true,
+                    priority,
+                },
+            )?;
+        }
+
+        set_ping_pong_status(self.dma(), self.channel(), Some(PingPongStatus::new()));
+        Ok(())
+    }
+
+    /// Configure a circular DMA read from a peripheral without taking ownership of
+    /// the channel or destination buffer.
+    ///
+    /// The destination address wraps after the major loop while the request remains
+    /// enabled. Half and major-loop interrupts may therefore be used as ping-pong
+    /// publication points without stopping the channel between buffer halves.
+    ///
+    /// # Safety
+    ///
+    /// - `peri_addr` must remain valid for peripheral reads while the transfer is active.
+    /// - `buf` must remain valid and inaccessible through normal Rust references while
+    ///   DMA is active.
+    /// - The caller must stop the channel before releasing or reusing `buf`.
+    pub(crate) unsafe fn setup_circular_read_from_peripheral<W: Word>(
+        &mut self,
+        peri_addr: *const W,
+        buf: &mut [W],
+        software: bool,
+        options: TransferOptions,
+    ) -> Result<(), InvalidParameters> {
+        if buf.is_empty() || buf.len() > DMA_MAX_TRANSFER_SIZE {
+            return Err(InvalidParameters);
+        }
+
+        unsafe {
+            self.setup_transfers(DmaTransferParameters {
+                src_ptr: peri_addr,
+                dst_ptr: buf.as_mut_ptr(),
+                dst_count: buf.len(),
+                src_incr: false,
+                dst_incr: true,
+                circular: true,
+                software,
+                options,
+            });
+        }
+
+        // Half/major completion notifications are delivered through the channel IRQ.
+        self.enable_interrupt();
+
+        Ok(())
+    }
+
     /// Set up a circular DMA transfer for continuous peripheral-to-memory reception.
     ///
     /// This configures the DMA channel for circular operation with both half-transfer
@@ -2084,29 +2691,18 @@ impl<'a> DmaChannel<'a> {
         peri_addr: *const W,
         buf: &'buf mut [W],
     ) -> Result<RingBuffer<'_, 'buf, W>, InvalidParameters> {
-        if buf.is_empty() || buf.len() > DMA_MAX_TRANSFER_SIZE {
-            return Err(InvalidParameters);
-        }
-
         unsafe {
-            self.setup_transfers(DmaTransferParameters {
-                src_ptr: peri_addr,
-                dst_ptr: buf.as_mut_ptr(),
-                dst_count: buf.len(),
-                src_incr: false,
-                dst_incr: true,
-                circular: true,
-                software: true,
-                options: TransferOptions {
+            self.setup_circular_read_from_peripheral(
+                peri_addr,
+                buf,
+                true,
+                TransferOptions {
                     half_transfer_interrupt: true,
                     complete_transfer_interrupt: true,
                     priority: Priority::default(),
                 },
-            });
+            )?;
         }
-
-        // Enable NVIC interrupt for this channel so async wakeups work
-        self.enable_interrupt();
 
         Ok(unsafe { RingBuffer::new(self.reborrow(), buf) })
     }
@@ -2267,7 +2863,7 @@ impl<'a, W: Word> ScatterGatherBuilder<'a, W> {
                 if is_last {
                     // Only one TCD - no ESG, no START (we add START manually)
                     self.tcds[i].dlast_sga = 0;
-                    self.tcds[i].csr = 0x0002; // INTMAJOR only
+                    self.tcds[i].csr = 0x0002; // INTMAJOR
                 } else {
                     // First of multiple - ESG to link, no START (we add START manually)
                     self.tcds[i].dlast_sga = &self.tcds[i + 1] as *const Tcd as i32;
@@ -2284,6 +2880,7 @@ impl<'a, W: Word> ScatterGatherBuilder<'a, W> {
             }
         }
 
+        channel.prepare_regular_transfer();
         let t = channel.tcd();
 
         // Reset channel state - clear DONE, disable requests, clear errors
@@ -2302,7 +2899,7 @@ impl<'a, W: Word> ScatterGatherBuilder<'a, W> {
         cortex_m::asm::dsb();
 
         // Start the transfer
-        t.tcd_csr().modify(|w| w.set_start(Start::CHANNEL_STARTED));
+        t.tcd_csr().modify(|w| w.set_start(Start::ChannelStarted));
 
         Ok(Transfer::new(channel))
     }
@@ -2338,10 +2935,72 @@ pub struct ScatterGatherResult {
 ///
 /// # Safety
 /// Must be called from the correct DMA channel interrupt context.
-unsafe fn on_interrupt(ch_index: usize) {
+pub(crate) unsafe fn on_interrupt(dma: usize, channel: usize) {
     crate::perf_counters::incr_interrupt_edma0();
-    let edma = &pac::EDMA_0_TCD;
-    let t = edma.tcd(ch_index);
+
+    let t = match dma {
+        0 => pac::EDMA_0_TCD.tcd(channel),
+        #[cfg(feature = "mcxa5xx")]
+        1 => pac::EDMA_1_TCD.tcd(channel),
+        _ => unreachable!(),
+    };
+
+    if !t.ch_int().read().int() {
+        // The interrupt has been cleared, ignore this spurious interrupt.
+        return;
+    }
+
+    let state = &STATES[dma][channel];
+
+    if ping_pong_status(dma, channel).is_some() {
+        // Clear the observed boundary before sampling progress. If another
+        // boundary occurs while this ISR runs, hardware will latch CH_INT again
+        // instead of that newer event being lost in this W1C operation.
+        t.ch_int().write(|w| w.set_int(true));
+
+        let done = t.ch_csr().read().done();
+        let biter = t.tcd_biter_elinkno().read().biter();
+        let citer = t.tcd_citer_elinkno().read().citer();
+
+        let valid = biter >= 2 && biter.is_multiple_of(2) && citer <= biter;
+        let another_boundary = t.ch_int().read().int();
+        // `current` independently validates this phase classification. If ISR
+        // latency spans another boundary, the sampled buffer will be unexpected
+        // (or a previous grant will remain), deliberately producing an overrun.
+        let completed = if !valid || another_boundary {
+            None
+        } else if done {
+            // If DONE is set, it means Buffer B has completed.
+            Some(PingPongSelector::BufferB)
+        } else if citer > 0 && citer <= biter / 2 {
+            // If CITER is in the first half, it means Buffer A is currently being transferred.
+            Some(PingPongSelector::BufferA)
+        } else if citer > biter / 2 {
+            // B completed, but a new A request already cleared DONE.
+            Some(PingPongSelector::BufferB)
+        } else {
+            None
+        };
+
+        let granted = match completed {
+            Some(buffer) => update_ping_pong_status(dma, channel, |status| status.grant_completed(buffer)),
+            None => Err(Error::Overrun),
+        };
+        if granted.is_err() {
+            let _ = update_ping_pong_status(dma, channel, |status| {
+                status.set_overrun();
+                Ok(())
+            });
+            // Prevent DMA from entering another half before the peripheral ISR
+            // disables its request source and drains any active minor loop.
+            t.ch_csr().modify(|w| {
+                w.set_erq(false);
+                w.set_earq(false);
+            });
+        }
+
+        return;
+    }
 
     // Read TCD CSR to determine interrupt source
     let csr = t.tcd_csr().read();
@@ -2356,33 +3015,43 @@ unsafe fn on_interrupt(ch_index: usize) {
         if citer <= half_point && citer > 0 {
             // Half-transfer interrupt - wake half_waker
             crate::perf_counters::incr_interrupt_edma0_wake();
-            half_waker(ch_index).wake();
+            half_waker(dma, channel).wake();
         }
     }
+
+    // Peripheral-paced SG enables INTMAJOR only on its final TCD, so CH_INT
+    // can be latched as whole-chain completion while that mode is active.
+    let wake = if state.peripheral_scatter_gather_active.load(Ordering::Acquire) {
+        state.peripheral_scatter_gather_done.store(true, Ordering::Release);
+        true
+    } else {
+        t.ch_csr().read().done()
+    };
 
     // Clear INT flag
     t.ch_int().write(|w| w.set_int(true));
 
-    // If DONE is set, this is a complete-transfer interrupt
-    // Only wake the full-transfer waker when the transfer is actually complete
-    if t.ch_csr().read().done() {
+    // If the transfer is done or if we're in peripheral
+    if wake {
         crate::perf_counters::incr_interrupt_edma0_wake();
-        waker(ch_index).wake();
+        waker(dma, channel).wake();
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
 /// Macro to generate DMA channel interrupt handlers.
 macro_rules! impl_dma_interrupt_handler {
-    ($irq:ident, $ch:expr) => {
-        #[interrupt]
+    ($irq:ident, $dma:expr, $ch:expr) => {
+        #[cortex_m_rt::interrupt]
         fn $irq() {
             // SAFETY: The correct $ch is called as generated, We check that
             // the given callback is non-null before calling.
             unsafe {
-                on_interrupt($ch);
+                $crate::dma::on_interrupt($dma, $ch);
 
                 // See https://doc.rust-lang.org/std/primitive.fn.html#casting-to-and-from-integers
-                let cb: *mut () = CALLBACKS[$ch].load(Ordering::Acquire);
+                let cb: *mut () = $crate::dma::CALLBACKS[$dma][$ch].load(core::sync::atomic::Ordering::Acquire);
                 if !cb.is_null() {
                     let cb: fn() = core::mem::transmute(cb);
                     (cb)();
@@ -2392,18 +3061,8 @@ macro_rules! impl_dma_interrupt_handler {
     };
 }
 
-use crate::pac::interrupt;
-
-impl_dma_interrupt_handler!(DMA0_CH0, 0);
-impl_dma_interrupt_handler!(DMA0_CH1, 1);
-impl_dma_interrupt_handler!(DMA0_CH2, 2);
-impl_dma_interrupt_handler!(DMA0_CH3, 3);
-impl_dma_interrupt_handler!(DMA0_CH4, 4);
-impl_dma_interrupt_handler!(DMA0_CH5, 5);
-impl_dma_interrupt_handler!(DMA0_CH6, 6);
-impl_dma_interrupt_handler!(DMA0_CH7, 7);
-
 // TODO(AJM): This is a gross, gross hack. This implements optional callbacks
 // for DMA completion interrupts. This should go away once we switch to
 // "in-band" DMA interrupt binding with `bind_interrupts!`.
-static CALLBACKS: [AtomicPtr<()>; 8] = [const { AtomicPtr::new(core::ptr::null_mut()) }; 8];
+pub(crate) static CALLBACKS: [[AtomicPtr<()>; DMA_CHANNEL_COUNT]; DMA_INSTANCE_COUNT] =
+    [const { [const { AtomicPtr::new(core::ptr::null_mut()) }; DMA_CHANNEL_COUNT] }; DMA_INSTANCE_COUNT];

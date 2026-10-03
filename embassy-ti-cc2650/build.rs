@@ -354,23 +354,9 @@ impl DriverlibBuilder {
     }
 
     fn strip_rom_symbols_from_norom_lib(&self) {
-        const EXCLUDED: &[&str] = &[
-            // Not stripped, because these are used in relocations.
-            "FlashProtectionGet",
-            "UARTDisable",
-            "VIMSModeSet",
-            "IntEnable",
-            "IntDisable",
-            "",
-        ];
-
         let symbols = std::fs::read_to_string(&self.enabled_rom_fns_path).unwrap();
 
-        let filtered_symbols: Vec<&str> = symbols
-            .split('\n')
-            .map(str::trim)
-            .filter(|symbol| !EXCLUDED.contains(symbol))
-            .collect();
+        let filtered_symbols: Vec<&str> = symbols.split('\n').map(str::trim).collect();
 
         let strip_list_path = self.out.join("strip_symbols.txt");
         std::fs::write(&strip_list_path, filtered_symbols.join("\n")).unwrap();

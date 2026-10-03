@@ -3,7 +3,7 @@
 
 use embassy_executor::Spawner;
 use embassy_ti_cc2650::chip::peripherals;
-use embassy_ti_cc2650::uart::{Config, UartFull, UartFullRxReceiver, UartFullRxReceiverImpl, UartFullRxRunner};
+use embassy_ti_cc2650::uart::{Config, UartFull, UartFullLineReceiver, UartFullRxReceiver, UartFullRxRunner};
 use embassy_ti_cc2650::{bind_interrupts, uart};
 use panic_probe as _;
 use static_cell::StaticCell;
@@ -31,7 +31,7 @@ async fn main(spawner: Spawner) {
     let comm_buf = COMM_BUF.init([0u16; UART_COMM_BUF_SIZE]);
 
     let (uart, rx_end) = UartFull::new(p.UART0, config, comm_buf, Irqs);
-    let mut uart_receiver = UartFullRxReceiverImpl::new(rx_end);
+    let mut uart_receiver = UartFullLineReceiver::new(rx_end);
 
     // split() consumes uart.
     let (mut tx, rx_runner) = uart.split();

@@ -10,9 +10,10 @@ use fixed::types::extra::U8;
 
 use crate::clocks::clk_sys_freq;
 use crate::gpio::Level;
+use crate::mode::{Async, Blocking, Mode};
 use crate::pio::{Common, Direction, Instance, LoadedProgram, Pin, PioPin, ShiftDirection, StateMachine};
-use crate::spi::{Async, Blocking, Config, Mode};
-use crate::{dma, interrupt};
+use crate::spi::Config;
+use crate::{dma, interrupt, mode};
 
 /// This struct represents an SPI program loaded into pio instruction memory.
 struct PioSpiProgram<'d, PIO: Instance> {
@@ -92,8 +93,8 @@ pub struct Spi<'d, PIO: Instance, const SM: usize, M: Mode> {
     cfg: crate::pio::Config<'d, PIO>,
     program: Option<PioSpiProgram<'d, PIO>>,
     clk_pin: Pin<'d, PIO>,
-    tx_dma: Option<dma::Channel<'d>>,
-    rx_dma: Option<dma::Channel<'d>>,
+    tx_dma: Option<dma::Channel<'d, mode::Async>>,
+    rx_dma: Option<dma::Channel<'d, mode::Async>>,
     phantom: PhantomData<M>,
 }
 
@@ -105,8 +106,8 @@ impl<'d, PIO: Instance, const SM: usize, M: Mode> Spi<'d, PIO, SM, M> {
         clk_pin: Peri<'d, impl PioPin>,
         mosi_pin: Peri<'d, impl PioPin>,
         miso_pin: Peri<'d, impl PioPin>,
-        tx_dma: Option<dma::Channel<'d>>,
-        rx_dma: Option<dma::Channel<'d>>,
+        tx_dma: Option<dma::Channel<'d, mode::Async>>,
+        rx_dma: Option<dma::Channel<'d, mode::Async>>,
         config: Config,
     ) -> Self {
         let program = PioSpiProgram::new(pio, config.phase);
@@ -135,7 +136,7 @@ impl<'d, PIO: Instance, const SM: usize, M: Mode> Spi<'d, PIO, SM, M> {
         cfg.shift_out.direction = ShiftDirection::Left;
         cfg.shift_out.threshold = 8;
 
-        cfg.clock_divider = calculate_clock_divider(config.frequency);
+        cfg.clock_divider = calculate_clock_divider(config.frequency.0);
 
         sm.set_config(&cfg);
 
@@ -254,7 +255,7 @@ impl<'d, PIO: Instance, const SM: usize, M: Mode> Spi<'d, PIO, SM, M> {
     pub fn set_config(&mut self, pio: &mut Common<'d, PIO>, config: &Config) {
         self.sm.set_enable(false);
 
-        self.cfg.clock_divider = calculate_clock_divider(config.frequency);
+        self.cfg.clock_divider = calculate_clock_divider(config.frequency.0);
 
         if let Polarity::IdleHigh = config.polarity {
             self.clk_pin.set_output_inversion(true);

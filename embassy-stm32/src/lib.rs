@@ -16,30 +16,55 @@ mod fmt;
 include!(concat!(env!("OUT_DIR"), "/_macros.rs"));
 
 // Utilities
+mod atomic;
 mod macros;
 pub mod time;
+mod wait;
 /// Operating modes for peripherals.
 pub mod mode {
-    trait SealedMode {}
+    use core::marker::PhantomData;
+
+    use crate::interrupt::typelevel::{Binding, Handler, Interrupt};
+
+    /// Interrupt Handler with bindings autoimplemented for all Irq structs.
+    #[derive(Clone, Copy)]
+    pub struct NoHandler<I: Interrupt> {
+        _marker: PhantomData<I>,
+    }
+
+    impl<I: Interrupt> Handler<I> for NoHandler<I> {
+        unsafe fn on_interrupt() {}
+    }
+
+    unsafe impl<T: Copy, I: Interrupt> Binding<I, NoHandler<I>> for T {}
+
+    pub(crate) trait SealedMode {
+        #[allow(dead_code)]
+        const ASYNC: bool;
+    }
 
     /// Operating mode for a peripheral.
     #[allow(private_bounds)]
     pub trait Mode: SealedMode {}
 
     macro_rules! impl_mode {
-        ($name:ident) => {
-            impl SealedMode for $name {}
+        ($name:ident, $async: expr) => {
+            impl SealedMode for $name {
+                const ASYNC: bool = $async;
+            }
             impl Mode for $name {}
         };
     }
 
     /// Blocking mode.
+    #[derive(Clone, Copy)]
     pub struct Blocking;
     /// Async mode.
+    #[derive(Clone, Copy)]
     pub struct Async;
 
-    impl_mode!(Blocking);
-    impl_mode!(Async);
+    impl_mode!(Blocking, false);
+    impl_mode!(Async, true);
 }
 
 // Always-present hardware
@@ -50,44 +75,109 @@ pub mod rcc;
 mod time_driver;
 pub mod timer;
 
+#[cfg(any(adf, mdf))]
+pub(crate) mod dflt;
+
 // Sometimes-present hardware
 
 #[cfg(adc)]
 pub mod adc;
-#[cfg(aes_v3b)]
+#[cfg(adf)]
+pub mod adf;
+#[cfg(aes)]
 pub mod aes;
 #[cfg(backup_sram)]
 pub mod backup_sram;
 #[cfg(can)]
 pub mod can;
-#[cfg(any(comp_u5, comp_v1, comp_v2))]
+#[cfg(any(comp_u5, comp_v1, comp_v2, comp_u0))]
 pub mod comp;
-#[cfg(cordic)]
+#[cfg(all(cordic, not(stm32c5)))]
 pub mod cordic;
+#[cfg(any(aes, saes, cryp))]
+mod crypto;
+#[cfg(any(
+    all(
+        aes,
+        any(
+            feature = "embassy-crypto-aes128-ecb",
+            feature = "embassy-crypto-aes128-cbc",
+            feature = "embassy-crypto-aes128-ctr",
+            feature = "embassy-crypto-aes128-gcm",
+            feature = "embassy-crypto-aes128-ccm",
+            feature = "embassy-crypto-aes128-cmac",
+            feature = "embassy-crypto-aes256-ecb",
+            feature = "embassy-crypto-aes256-cbc",
+            feature = "embassy-crypto-aes256-ctr",
+            feature = "embassy-crypto-aes256-gcm",
+            feature = "embassy-crypto-aes256-ccm",
+        )
+    ),
+    all(
+        cryp,
+        any(
+            feature = "embassy-crypto-aes128-ecb",
+            feature = "embassy-crypto-aes128-cbc",
+            feature = "embassy-crypto-aes128-ctr",
+            feature = "embassy-crypto-aes128-gcm",
+            feature = "embassy-crypto-aes128-ccm",
+            feature = "embassy-crypto-aes128-cmac",
+            feature = "embassy-crypto-aes256-ecb",
+            feature = "embassy-crypto-aes256-cbc",
+            feature = "embassy-crypto-aes256-ctr",
+            feature = "embassy-crypto-aes256-gcm",
+            feature = "embassy-crypto-aes256-ccm",
+            feature = "embassy-crypto-aes256-cmac",
+        )
+    ),
+))]
+mod crypto_driver;
+
+#[cfg(not(any(comp_u5, comp_v1, comp_v2, comp_u0)))]
+pub mod comp {
+    //! Comp stub module to provide consistent API
+
+    trait_set::trait_set! {
+        /// Comp stub peripheral type
+        pub trait Instance = embassy_hal_internal::PeripheralType + 'static;
+    }
+
+    pin_trait!(OutputPin, Instance);
+}
 
 // Stub macros for COMP pin implementations when comp module is not compiled.
 // These are needed because build.rs generates macro calls for all chips with COMP,
 // but the actual macros are only defined in the comp module.
-#[cfg(all(comp, not(any(comp_u5, comp_v1, comp_v2))))]
+#[cfg(all(comp, not(any(comp_u5, comp_v1, comp_v2, comp_u0))))]
 #[allow(unused_macros)]
 macro_rules! impl_comp_inp_pin {
     ($inst:ident, $pin:ident, $ch:expr) => {};
 }
-#[cfg(all(comp, not(any(comp_u5, comp_v1, comp_v2))))]
+#[cfg(all(comp, not(any(comp_u5, comp_v1, comp_v2, comp_u0))))]
 #[allow(unused_macros)]
 macro_rules! impl_comp_inm_pin {
     ($inst:ident, $pin:ident, $ch:expr) => {};
 }
+#[cfg(cacheaxi)]
+pub mod cacheaxi;
 #[cfg(any(ipcc, hsem))]
 pub mod cpu;
 #[cfg(crc)]
 pub mod crc;
 #[cfg(cryp)]
 pub mod cryp;
-#[cfg(dac)]
+#[cfg(csi)]
+pub mod csi;
+#[cfg(all(dac, not(stm32c5)))]
 pub mod dac;
 #[cfg(dcmi)]
 pub mod dcmi;
+#[cfg(dcmipp)]
+pub mod dcmipp;
+#[cfg(dfsdm)]
+pub mod dfsdm;
+#[cfg(dlybsd)]
+pub mod dlyb;
 #[cfg(dma2d)]
 pub mod dma2d;
 #[cfg(dsihost)]
@@ -100,11 +190,19 @@ pub mod eth;
 pub mod exti;
 #[cfg(flash)]
 pub mod flash;
-#[cfg(fmc)]
+#[cfg(fmac)]
+pub mod fmac;
+#[cfg(any(fmc, fsmc))]
 pub mod fmc;
-#[cfg(hash)]
+#[cfg(any(gfxmmu_v2, gfxmmu_n6))]
+pub mod gfxmmu;
+#[cfg(gfxtim)]
+pub mod gfxtim;
+#[cfg(gpu2d)]
+pub mod gpu2d;
+#[cfg(all(hash, not(stm32c5)))]
 pub mod hash;
-#[cfg(all(hrtim, feature = "stm32-hrtim"))]
+#[cfg(hrtim)]
 pub mod hrtim;
 #[cfg(hsem)]
 pub mod hsem;
@@ -114,38 +212,64 @@ pub mod hspi;
 pub mod i2c;
 #[cfg(any(spi_v1_i2s, spi_v2_i2s, spi_v3_i2s, spi_v4_i2s, spi_v5_i2s))]
 pub mod i2s;
+#[cfg(all(i3c, any(stm32n6, stm32h5, stm32u3, stm32c5, stm32h7rs)))]
+pub mod i3c;
+#[cfg(all(icache, not(stm32c5)))]
+pub mod icache;
 #[cfg(any(stm32wb, stm32wl5x))]
 pub mod ipcc;
+pub mod suspend;
+// JPEG is unavailable on some families (e.g. H7 uses different DMA signal names).
+#[cfg(all(jpeg, any(stm32n6, stm32u5f9, stm32u5g9)))]
+pub mod jpeg;
 #[cfg(lcd)]
 pub mod lcd;
 #[cfg(feature = "low-power")]
 pub mod low_power;
+#[cfg(lpgpio)]
+pub mod lpgpio;
 #[cfg(lptim)]
 pub mod lptim;
 #[cfg(ltdc)]
 pub mod ltdc;
+#[cfg(mce)]
+pub mod mce;
+#[cfg(mdf)]
+pub mod mdf;
+#[cfg(mdios)]
+pub mod mdios;
+#[cfg(npu)]
+pub mod npu;
 #[cfg(opamp)]
 pub mod opamp;
 #[cfg(octospi)]
 pub mod ospi;
-#[cfg(pka_v1a)]
+#[cfg(pka)]
 pub mod pka;
+#[cfg(pssi)]
+pub mod pssi;
 #[cfg(quadspi)]
 pub mod qspi;
+#[cfg(ramcfg_wba)]
+pub mod ramcfg;
+#[cfg(rifsc)]
+pub mod rif;
 #[cfg(rng)]
 pub mod rng;
 #[cfg(all(rtc, not(rtc_v1)))]
 pub mod rtc;
-#[cfg(saes_v1a)]
+#[cfg(saes)]
 pub mod saes;
 #[cfg(sai)]
 pub mod sai;
-#[cfg(sdmmc)]
+#[cfg(any(sdmmc_v1, sdmmc_v2, sdmmc_v3))]
 pub mod sdmmc;
 #[cfg(spdifrx)]
 pub mod spdifrx;
 #[cfg(spi)]
 pub mod spi;
+#[cfg(any(tamp_g0, tamp_g4, tamp_h5, tamp_l5, tamp_u5, tamp_wba, tamp_wl, tamp_n6))]
+pub mod tamp;
 #[cfg(tsc)]
 pub mod tsc;
 #[cfg(ucpd)]
@@ -305,6 +429,68 @@ pub struct Config {
     #[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32wba))]
     pub enable_independent_io_supply: bool,
 
+    /// Enable ultra-low-power BOR0 mode (discontinuous BOR monitoring) in
+    /// Stop 1 and Standby modes.
+    ///
+    /// This must be set to reach the lowest power consumption in low-power modes.
+    ///
+    /// **Constraints:**
+    /// - Must not be set when autonomous peripherals use HSI as kernel clock.
+    /// - Only effective when BOR levels 1-4 and PVD are disabled; when they
+    ///   are enabled, continuous mode applies regardless of this setting.
+    ///
+    /// Defaults to `false` (disabled).
+    #[cfg(stm32wba)]
+    pub enable_ulpmen: bool,
+
+    /// Enable flash fast wakeup from Stop 0/1 modes.
+    ///
+    /// When `true`, flash stays in normal mode during stop (faster wakeup,
+    /// higher power). When `false` (default), flash enters low-power mode
+    /// (slower wakeup, lower power).
+    ///
+    /// Defaults to `false`.
+    #[cfg(stm32wba)]
+    pub flash_fast_wakeup: bool,
+
+    /// SRAM power-down configuration for Stop modes.
+    ///
+    /// Controls which SRAM pages are powered down when entering Stop 0 or
+    /// Stop 1 modes. Powered-down pages lose their content but reduce
+    /// current draw.
+    ///
+    /// Defaults to all SRAM retained.
+    #[cfg(stm32wba)]
+    pub stop_mode_sram: rcc::StopModeSramConfig,
+
+    /// Enable the I/O analog switch voltage booster.
+    ///
+    /// The analog switch between a GPIO and the ADC (or comparator, or operational amplifier) has
+    /// a much higher resistance when the analog supply is low, which distorts conversions of pin
+    /// channels unless they are given a much longer sample time. The reference manuals ask for
+    /// this booster below 2.4 V (2.7 V on the H5, H7 and H7RS). It draws extra current, so it is
+    /// off by default.
+    ///
+    /// On boards where only VDDA is low and VDD is not, the analog switches can instead be
+    /// supplied from VDD, which this option does not do.
+    #[cfg(any(
+        stm32g0,
+        stm32g4,
+        stm32l4,
+        stm32l4_plus,
+        stm32l5,
+        stm32u0,
+        stm32u3,
+        stm32u5,
+        stm32wb,
+        stm32wba,
+        stm32wl,
+        stm32h5,
+        stm32h7,
+        stm32h7rs
+    ))]
+    pub enable_analog_switch_booster: bool,
+
     /// On the U5 series all analog peripherals are powered by a separate supply.
     #[cfg(any(stm32u5, stm32u3))]
     pub enable_independent_analog_supply: bool,
@@ -324,7 +510,7 @@ pub struct Config {
     /// GPDMA interrupt priority.
     ///
     /// Defaults to P0 (highest).
-    #[cfg(gpdma)]
+    #[cfg(any(gpdma, lpdma))]
     pub gpdma_interrupt_priority: Priority,
 
     /// MDMA interrupt priority.
@@ -362,13 +548,36 @@ impl Default for Config {
             enable_debug_during_sleep: true,
             #[cfg(any(stm32l4, stm32l5, stm32u5, stm32u3, stm32wba))]
             enable_independent_io_supply: true,
+            #[cfg(stm32wba)]
+            enable_ulpmen: false,
+            #[cfg(stm32wba)]
+            flash_fast_wakeup: false,
+            #[cfg(stm32wba)]
+            stop_mode_sram: rcc::StopModeSramConfig::default(),
+            #[cfg(any(
+                stm32g0,
+                stm32g4,
+                stm32l4,
+                stm32l4_plus,
+                stm32l5,
+                stm32u0,
+                stm32u3,
+                stm32u5,
+                stm32wb,
+                stm32wba,
+                stm32wl,
+                stm32h5,
+                stm32h7,
+                stm32h7rs
+            ))]
+            enable_analog_switch_booster: false,
             #[cfg(any(stm32u5, stm32u3))]
             enable_independent_analog_supply: true,
             #[cfg(bdma)]
             bdma_interrupt_priority: Priority::P0,
             #[cfg(dma)]
             dma_interrupt_priority: Priority::P0,
-            #[cfg(gpdma)]
+            #[cfg(any(gpdma, lpdma))]
             gpdma_interrupt_priority: Priority::P0,
             #[cfg(mdma)]
             mdma_interrupt_priority: Priority::P0,
@@ -439,7 +648,7 @@ mod dual_core {
         let shared_data = unsafe { shared_data.assume_init_ref() };
 
         // Enable hardware semaphore.
-        critical_section::with(|cs| crate::hsem::init_hsem(cs));
+        critical_section::with(|cs| crate::hsem::init_hsem(cs, true));
 
         #[cfg(stm32h7)]
         {
@@ -474,7 +683,7 @@ mod dual_core {
     /// A hardware semaphore is used to coordinate the init with the second core.
     pub fn try_init_secondary(shared_data: &'static MaybeUninit<SharedData>) -> Option<Peripherals> {
         critical_section::with(|cs| {
-            rcc::enable_with_cs::<peripherals::HSEM>(cs);
+            rcc::enable_with_cs_no_refcount::<peripherals::HSEM>(cs);
         });
 
         // Wait for the semaphore to be unlocked by the primary core
@@ -596,7 +805,7 @@ fn init_hw(config: Config) -> Peripherals {
 
         #[cfg(dbgmcu)]
         crate::pac::DBGMCU.cr().modify(|cr| {
-            #[cfg(dbgmcu_h5)]
+            #[cfg(any(dbgmcu_h5, dbgmcu_c5))]
             {
                 cr.set_stop(config.enable_debug_during_sleep);
                 cr.set_standby(config.enable_debug_during_sleep);
@@ -629,13 +838,16 @@ fn init_hw(config: Config) -> Peripherals {
 
         #[cfg(any(stm32h7rs))]
         // On the H7RS the SYSCFG should not be reset if it is already enabled. This is typically the case when running from external flash and the bootloader enables the SYSCFG.
-        rcc::enable_with_cs::<peripherals::SYSCFG>(cs);
-        #[cfg(not(any(stm32f1, stm32wb, stm32wl, stm32h7rs)))]
-        rcc::enable_and_reset_with_cs::<peripherals::SYSCFG>(cs);
-        #[cfg(not(any(stm32h5, stm32h7, stm32h7rs, stm32wb, stm32wl)))]
-        rcc::enable_and_reset_with_cs::<peripherals::PWR>(cs);
-        #[cfg(all(flash, not(any(stm32f2, stm32f4, stm32f7, stm32l0, stm32h5, stm32h7, stm32h7rs))))]
-        rcc::enable_and_reset_with_cs::<peripherals::FLASH>(cs);
+        rcc::enable_with_cs_no_refcount::<peripherals::SYSCFG>(cs);
+        #[cfg(not(any(stm32f1, stm32wb, stm32wl, stm32h7rs, stm32c5)))]
+        rcc::enable_and_reset_with_cs_no_refcount::<peripherals::SYSCFG>(cs);
+        #[cfg(not(any(stm32h5, stm32h7, stm32h7rs, stm32wb, stm32wl, stm32c5)))]
+        rcc::enable_and_reset_with_cs_no_refcount::<peripherals::PWR>(cs);
+        #[cfg(all(
+            flash,
+            not(any(stm32f2, stm32f4, stm32f7, stm32l0, stm32h5, stm32h7, stm32h7rs, stm32c5))
+        ))]
+        rcc::enable_and_reset_with_cs_no_refcount::<peripherals::FLASH>(cs);
 
         // Enable the VDDIO2 power supply on chips that have it.
         // Note that this requires the PWR peripheral to be enabled first.
@@ -652,10 +864,77 @@ fn init_hw(config: Config) -> Peripherals {
         {
             use crate::pac::pwr::vals;
             crate::pac::PWR.svmcr().modify(|w| {
-                w.set_io2sv(if config.enable_independent_io_supply {
-                    vals::Io2sv::B0x1
+                w.set_io2sv(config.enable_independent_io_supply);
+            });
+
+            // Ultra-low-power BOR0 mode for lowest Stop 1 / Standby consumption.
+            crate::pac::PWR.cr1().modify(|w| w.set_ulpmen(config.enable_ulpmen));
+
+            // Flash fast wakeup and SRAM page power-down in Stop modes.
+            crate::pac::PWR.cr2().modify(|w| {
+                w.set_flashfwu(if config.flash_fast_wakeup {
+                    vals::Flashfwu::Normal
                 } else {
-                    vals::Io2sv::B0x0
+                    vals::Flashfwu::LowPower
+                });
+
+                let sram = &config.stop_mode_sram;
+                w.set_sram1pds(
+                    0,
+                    if sram.sram1_page0 {
+                        vals::Srampds::PoweredOff
+                    } else {
+                        vals::Srampds::PoweredOn
+                    },
+                );
+                w.set_sram1pds(
+                    1,
+                    if sram.sram1_page1 {
+                        vals::Srampds::PoweredOff
+                    } else {
+                        vals::Srampds::PoweredOn
+                    },
+                );
+                w.set_sram1pds(
+                    2,
+                    if sram.sram1_page2 {
+                        vals::Srampds::PoweredOff
+                    } else {
+                        vals::Srampds::PoweredOn
+                    },
+                );
+                w.set_sram1pds(
+                    3,
+                    if sram.sram1_page3 {
+                        vals::Srampds::PoweredOff
+                    } else {
+                        vals::Srampds::PoweredOn
+                    },
+                );
+                w.set_sram2pds1(if sram.sram2 {
+                    vals::Srampds::PoweredOff
+                } else {
+                    vals::Srampds::PoweredOn
+                });
+                w.set_sram1pds567(if sram.sram1_pages567 {
+                    vals::Sram1pds567::PoweredOff
+                } else {
+                    vals::Sram1pds567::PoweredOn
+                });
+                w.set_icrampds(if sram.icache_sram {
+                    vals::Icrampds::NotRetained
+                } else {
+                    vals::Icrampds::Retained
+                });
+                w.set_prampds(if sram.otg_sram {
+                    vals::Srampds::PoweredOff
+                } else {
+                    vals::Srampds::PoweredOn
+                });
+                w.set_pkarampds(if sram.pka_sram {
+                    vals::Srampds::PoweredOff
+                } else {
+                    vals::Srampds::PoweredOn
                 });
             });
         }
@@ -679,6 +958,39 @@ fn init_hw(config: Config) -> Peripherals {
                 });
             }
         }
+
+        // I/O analog switch voltage booster. The bit lives in a different peripheral on almost
+        // every family: SYSCFG on most, SBS on the H7RS, PWR on the H5 (where it additionally
+        // only takes effect once software declares the analog supply good, RM0481 §10.11).
+        #[cfg(any(
+            stm32g0,
+            stm32g4,
+            stm32l4,
+            stm32l4_plus,
+            stm32l5,
+            stm32u0,
+            stm32u3,
+            stm32u5,
+            stm32wb,
+            stm32wba,
+            stm32wl
+        ))]
+        crate::pac::SYSCFG
+            .cfgr1()
+            .modify(|w| w.set_boosten(config.enable_analog_switch_booster));
+        #[cfg(stm32h7rs)]
+        crate::pac::SYSCFG
+            .pmcr()
+            .modify(|w| w.set_boosten(config.enable_analog_switch_booster));
+        #[cfg(stm32h7)]
+        crate::pac::SYSCFG
+            .pmcr()
+            .modify(|w| w.set_booste(config.enable_analog_switch_booster));
+        #[cfg(stm32h5)]
+        crate::pac::PWR.pmcr().modify(|w| {
+            w.set_avd_ready(config.enable_analog_switch_booster);
+            w.set_booste(config.enable_analog_switch_booster);
+        });
 
         // dead battery functionality is still present on these
         // chips despite them not having UCPD- disable it
@@ -723,7 +1035,7 @@ fn init_hw(config: Config) -> Peripherals {
                 config.bdma_interrupt_priority,
                 #[cfg(dma)]
                 config.dma_interrupt_priority,
-                #[cfg(gpdma)]
+                #[cfg(any(gpdma, lpdma))]
                 config.gpdma_interrupt_priority,
                 #[cfg(mdma)]
                 config.mdma_interrupt_priority,
@@ -735,7 +1047,7 @@ fn init_hw(config: Config) -> Peripherals {
 
             // must be before time_driver init to allow refcount reset
             #[cfg(all(any(stm32wb, stm32wl5x), feature = "low-power"))]
-            hsem::init_hsem(cs);
+            hsem::init_hsem(cs, true);
 
             // must be after rcc init
             #[cfg(feature = "_time-driver")]
@@ -744,14 +1056,14 @@ fn init_hw(config: Config) -> Peripherals {
             // must be after time-driver init
             #[cfg(all(feature = "low-power", not(feature = "_lp-time-driver")))]
             rtc::init_rtc(cs, config.rtc, config.min_stop_pause);
+            #[cfg(all(feature = "low-power", feature = "_lp-time-driver"))]
+            crate::time_driver::LPTimeDriver::set_min_stop_pause(
+                crate::time_driver::get_driver(),
+                cs,
+                config.min_stop_pause,
+            );
         }
 
         p
     })
-}
-
-/// Performs a busy-wait delay for a specified number of microseconds.
-#[allow(unused)]
-pub(crate) fn block_for_us(us: u64) {
-    cortex_m::asm::delay(unsafe { rcc::get_freqs().sys.to_hertz().unwrap().0 as u64 * us / 1_000_000 } as u32);
 }

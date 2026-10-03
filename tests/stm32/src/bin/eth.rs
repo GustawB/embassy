@@ -5,32 +5,35 @@
 #[path = "../common.rs"]
 mod common;
 use common::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_net::StackResources;
+use embassy_net::StackStorage;
 use embassy_stm32::eth::{Ethernet, GenericPhy, PacketQueue, Sma};
 use embassy_stm32::peripherals::{ETH, ETH_SMA};
+#[cfg(feature = "stop")]
+use embassy_stm32::rcc::{StopMode, WakeGuard};
 use embassy_stm32::rng::Rng;
 use embassy_stm32::{bind_interrupts, eth, peripherals, rng};
+use panic_probe as _;
 use static_cell::StaticCell;
-use {defmt_rtt as _, panic_probe as _};
 
 teleprobe_meta::timeout!(120);
 
 #[cfg(not(any(feature = "stm32h563zi", feature = "stm32f767zi", feature = "stm32f207zg")))]
 bind_interrupts!(struct Irqs {
-    ETH => eth::InterruptHandler;
+    ETH => eth::InterruptHandler<ETH>;
     HASH_RNG => rng::InterruptHandler<peripherals::RNG>;
 });
 #[cfg(any(feature = "stm32h563zi", feature = "stm32f767zi", feature = "stm32f207zg"))]
 bind_interrupts!(struct Irqs {
-    ETH => eth::InterruptHandler;
+    ETH => eth::InterruptHandler<ETH>;
     RNG => rng::InterruptHandler<peripherals::RNG>;
 });
 
 type Device = Ethernet<'static, ETH, GenericPhy<Sma<'static, ETH_SMA>>>;
 
 #[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, Device>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static>) -> ! {
     runner.run().await
 }
 
@@ -46,7 +49,7 @@ async fn main(spawner: Spawner) {
     // Generate random seed.
     let mut rng = Rng::new(p.RNG, Irqs);
     let mut seed = [0; 8];
-    rng.fill_bytes(&mut seed);
+    rng.blocking_fill_bytes(&mut seed);
     let seed = u64::from_le_bytes(seed);
 
     // Ensure different boards get different MAC
@@ -77,7 +80,6 @@ async fn main(spawner: Spawner) {
     let device = Ethernet::new(
         PACKETS.init(PacketQueue::<PACKET_QUEUE_SIZE, PACKET_QUEUE_SIZE>::new()),
         p.ETH,
-        Irqs,
         p.PA1,
         p.PA7,
         p.PC4,
@@ -92,28 +94,37 @@ async fn main(spawner: Spawner) {
         p.ETH_SMA,
         p.PA2,
         p.PC1,
+        Irqs,
     );
 
-    let config = embassy_net::Config::dhcpv4(Default::default());
-    //let config = embassy_net::Config::ipv4_static(embassy_net::StaticConfigV4 {
-    //    address: Ipv4Cidr::new(Ipv4Address::new(10, 42, 0, 61), 24),
-    //    dns_servers: Vec::new(),
-    //    gateway: Some(Ipv4Address::new(10, 42, 0, 1)),
-    //});
-
     // Init network stack
-    static RESOURCES: StaticCell<StackResources<2>> = StaticCell::new();
-    let (stack, runner) = embassy_net::new(device, config, RESOURCES.init(StackResources::new()), seed);
+    static STACK: StaticCell<StackStorage> = StaticCell::new();
+    let (stack, runner) = embassy_net::Stack::new(STACK.init(StackStorage::new()), seed);
+
+    // Add the ethernet interface to the stack.
+    static ETH: StaticCell<Device> = StaticCell::new();
+    let eth = unwrap!(stack.add_iface_borrowed(ETH.init(device)));
+
+    // Get an address over DHCP.
+    unwrap!(eth.set_dhcpv4(Some(Default::default())));
+    //eth.add_ip_addr(IpCidr::new(Ipv4Addr::new(10, 42, 0, 61).into(), 24)).unwrap();
+    //stack.routes().add_default_ipv4_route(Ipv4Addr::new(10, 42, 0, 1), eth.handle()).unwrap();
+
+    #[cfg(feature = "stop")]
+    let _guard = WakeGuard::new(StopMode::Stop1);
 
     // Launch network task
     spawner.spawn(unwrap!(net_task(runner)));
 
     perf_client::run(
-        stack,
+        eth,
         perf_client::Expected {
             down_kbps: 1000,
             up_kbps: 1000,
+            #[cfg(not(feature = "stm32h755zi"))]
             updown_kbps: 1000,
+            #[cfg(feature = "stm32h755zi")]
+            updown_kbps: 500,
         },
     )
     .await;

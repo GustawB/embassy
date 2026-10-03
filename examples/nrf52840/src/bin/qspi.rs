@@ -2,10 +2,11 @@
 #![no_main]
 
 use defmt::{assert_eq, info, unwrap};
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::qspi::Frequency;
 use embassy_nrf::{bind_interrupts, peripherals, qspi};
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 const PAGE_SIZE: usize = 4096;
 
@@ -30,7 +31,7 @@ async fn main(_spawner: Spawner) {
     config.write_page_size = qspi::WritePageSize::_256bytes;
 
     let mut q = qspi::Qspi::new(
-        p.QSPI, Irqs, p.P0_19, p.P0_17, p.P0_20, p.P0_21, p.P0_22, p.P0_23, config,
+        p.QSPI, p.P0_19, p.P0_17, p.P0_20, p.P0_21, p.P0_22, p.P0_23, Irqs, config,
     );
 
     let mut id = [1; 3];

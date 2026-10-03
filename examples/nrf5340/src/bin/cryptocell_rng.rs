@@ -1,21 +1,22 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_nrf::cryptocell_rng::{self, CcRng};
-use embassy_nrf::{bind_interrupts, peripherals};
+use embassy_nrf::bind_interrupts;
+use embassy_nrf::crypto::rng::{self, Rng};
+use panic_probe as _;
 use rand::Rng as _;
-use {defmt_rtt as _, panic_probe as _};
 
 bind_interrupts!(struct Irqs {
-    CRYPTOCELL => cryptocell_rng::InterruptHandler<peripherals::CC_RNG>;
+    CRYPTOCELL => rng::InterruptHandler;
 });
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_nrf::init(Default::default());
 
-    let mut rng = CcRng::new(p.CC_RNG, Irqs);
+    let mut rng = Rng::new(p.CRYPTO_RNG, Irqs);
 
     // Async API
     let mut bytes = [0; 4];

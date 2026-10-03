@@ -5,7 +5,6 @@
 
 use crate::chip::Peripherals;
 use crate::prcm::Prcm;
-use crate::uart::UartPinConfig;
 
 mod ccfg;
 pub mod chip;
@@ -67,14 +66,13 @@ macro_rules! bind_interrupts {
 }
 
 macro_rules! define_peri {
-    ($name:ident, $cc2650_crate:ident, $addr:expr) => {
+    ($name:ident, $pac_peri:ident, $addr:expr) => {
         mod internals {
             use super::pac;
             use super::paste;
             use core::ops::Deref;
 
-            #[allow(non_camel_case_types)]
-            pub(super) struct $name(*const pac::$cc2650_crate::RegisterBlock);
+            pub(super) struct $name(*const pac::$pac_peri::RegisterBlock);
             unsafe impl Send for $name {}
             unsafe impl Sync for $name {}
 
@@ -84,12 +82,12 @@ const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
             }
 
             impl Deref for $name {
-                type Target = pac::$cc2650_crate::RegisterBlock;
+                type Target = pac::$pac_peri::RegisterBlock;
 
                 // SAFETY: self.0 is an address of the start of the specific peripheral's registers.
-                // It should be taken from the cc2650 crate directly, as this crate wraps
-                // this address into RegisterBlock. As a result, as long as the addres is taken
-                // from the cc2650 crate and binded to the correct peripheral from this crate,
+                // It should be taken from the PAC directly, as the PAC wraps
+                // this address into RegisterBlock. As a result, as long as the address is taken
+                // from the PAC and bound to the correct peripheral from this crate,
                 // this deref impl should be "safe".
                 fn deref(&self) -> &Self::Target {
                     unsafe { &*self.0 }
@@ -101,10 +99,10 @@ const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
 }
 pub(crate) use define_peri;
 
-pub trait PinConfig: UartPinConfig + Copy {}
-impl<T> PinConfig for T where T: UartPinConfig + Copy {}
-
 pub fn init() -> Peripherals {
+    unsafe {
+        driverlib::SetupTrimDevice();
+    };
     let peripherals = pac::Peripherals::take().unwrap();
     let prcm = Prcm::new(peripherals.PRCM);
 

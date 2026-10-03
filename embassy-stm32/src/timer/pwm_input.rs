@@ -4,11 +4,12 @@ use core::marker::PhantomData;
 use core::pin::Pin;
 use core::task::{Context, Poll};
 
-use super::low_level::{CountingMode, InputCaptureMode, InputTISelection, SlaveMode, Timer, TriggerSource};
+use super::low_level::{CountingMode, InputCaptureMode, InputCaptureSelection, SlaveMode, Timer, TriggerSource};
 use super::{CaptureCompareInterruptHandler, Ch1, Ch2, Channel, GeneralInstance4Channel, TimerPin};
 use crate::Peri;
 use crate::gpio::{AfType, Pull};
 use crate::interrupt::typelevel::{Binding, Interrupt};
+use crate::rcc::WakeGuard;
 use crate::time::Hertz;
 
 /// PWM Input driver.
@@ -19,6 +20,7 @@ use crate::time::Hertz;
 pub struct PwmInput<'d, T: GeneralInstance4Channel> {
     channel: Channel,
     inner: Timer<'d, T>,
+    _wake_guard: WakeGuard,
 }
 
 impl<'d, T: GeneralInstance4Channel> PwmInput<'d, T> {
@@ -60,10 +62,10 @@ impl<'d, T: GeneralInstance4Channel> PwmInput<'d, T> {
         // Configuration steps from ST RM0390 (STM32F446) chapter 17.3.6
         // or ST RM0008 (STM32F103) chapter 15.3.6 Input capture mode
         // or ST RM0440 (STM32G4) chapter 30.4.8 PWM input mode
-        inner.set_input_ti_selection(ch1, InputTISelection::Normal);
+        inner.set_input_capture_selection(ch1, InputCaptureSelection::Normal);
         inner.set_input_capture_mode(ch1, InputCaptureMode::Rising);
 
-        inner.set_input_ti_selection(ch2, InputTISelection::Alternate);
+        inner.set_input_capture_selection(ch2, InputCaptureSelection::Alternate);
         inner.set_input_capture_mode(ch2, InputCaptureMode::Falling);
 
         inner.set_trigger_source(match ch1 {
@@ -80,7 +82,11 @@ impl<'d, T: GeneralInstance4Channel> PwmInput<'d, T> {
         T::CaptureCompareInterrupt::unpend();
         unsafe { T::CaptureCompareInterrupt::enable() };
 
-        Self { channel: ch1, inner }
+        Self {
+            channel: ch1,
+            inner,
+            _wake_guard: T::RCC_INFO.wake_guard(),
+        }
     }
 
     /// Enable the given channel.
@@ -137,19 +143,16 @@ impl<'d, T: GeneralInstance4Channel> PwmInput<'d, T> {
 
     /// Asynchronously wait until the pin sees a rising edge (period measurement).
     pub async fn wait_for_period(&self) -> u32 {
-        self.new_future(self.channel.into()).await
+        self.new_future(self.channel).await
     }
 
     /// Asynchronously wait until the pin sees a falling edge (width measurement).
     pub async fn wait_for_width(&self) -> u32 {
-        self.new_future(
-            match self.channel {
-                Channel::Ch1 => Channel::Ch2,
-                Channel::Ch2 => Channel::Ch1,
-                _ => panic!("Invalid channel for PWM input"),
-            }
-            .into(),
-        )
+        self.new_future(match self.channel {
+            Channel::Ch1 => Channel::Ch2,
+            Channel::Ch2 => Channel::Ch1,
+            _ => panic!("Invalid channel for PWM input"),
+        })
         .await
     }
 }
@@ -175,13 +178,21 @@ impl<T: GeneralInstance4Channel> Future for PwmInputFuture<T> {
     type Output = u32;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        #[cfg(stm32l0)]
+        use crate::pac::timer::TimGp16 as timer;
+        #[cfg(not(stm32l0))]
+        use crate::pac::timer::TimGp32 as timer;
+
         T::state().cc_waker[self.channel.index()].register(cx.waker());
 
-        let regs = unsafe { crate::pac::timer::TimGp16::from_ptr(T::regs()) };
+        let regs = unsafe { timer::from_ptr(T::regs()) };
 
         let dier = regs.dier().read();
         if !dier.ccie(self.channel.index()) {
-            let val = regs.ccr(self.channel.index()).read().0;
+            #[cfg(not(stm32l0))]
+            let val = regs.ccr(self.channel.index()).read();
+            #[cfg(stm32l0)]
+            let val = regs.ccr(self.channel.index()).read().ccr() as u32;
             Poll::Ready(val)
         } else {
             Poll::Pending

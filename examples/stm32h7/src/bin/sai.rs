@@ -3,13 +3,15 @@
 #![no_std]
 #![no_main]
 
+use defmt_rtt as _;
 use embassy_executor::Spawner;
+use embassy_stm32 as hal;
 use grounded::uninit::GroundedArrayCell;
 use hal::rcc::*;
 use hal::sai::*;
 use hal::time::Hertz;
 use hal::{bind_interrupts, dma, peripherals};
-use {defmt_rtt as _, embassy_stm32 as hal, panic_probe as _};
+use panic_probe as _;
 
 const BLOCK_LENGTH: usize = 32; // 32 samples
 const HALF_DMA_BUFFER_LENGTH: usize = BLOCK_LENGTH * 2; //  2 channels
@@ -102,8 +104,8 @@ async fn main(_spawner: Spawner) {
         p.PE4,
         p.PE2,
         p.DMA1_CH0,
-        tx_buffer,
         Irqs,
+        tx_buffer,
         tx_config,
     );
 
@@ -114,7 +116,7 @@ async fn main(_spawner: Spawner) {
         core::slice::from_raw_parts_mut(ptr, len)
     };
 
-    let mut sai_receiver = Sai::new_synchronous(sub_block_rx, p.PE3, p.DMA1_CH1, rx_buffer, Irqs, rx_config);
+    let mut sai_receiver = Sai::new_synchronous(sub_block_rx, p.PE3, p.DMA1_CH1, Irqs, rx_buffer, rx_config);
 
     sai_receiver.start().unwrap();
 

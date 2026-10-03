@@ -10,11 +10,12 @@
 use core::mem;
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::twim::{self, Twim};
 use embassy_nrf::{bind_interrupts, peripherals};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 const ADDRESS: u8 = 0x50;
 
@@ -35,11 +36,11 @@ async fn main(_p: Spawner) {
         // Create the TWIM instance with borrowed singletons, so they're not consumed.
         let mut twi = Twim::new(
             p.TWISPI0.reborrow(),
-            Irqs,
-            p.P0_03.reborrow(),
             p.P0_04.reborrow(),
-            config,
+            p.P0_03.reborrow(),
+            Irqs,
             &mut ram_buffer,
+            config,
         );
 
         info!("Reading...");

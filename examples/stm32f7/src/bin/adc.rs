@@ -2,17 +2,18 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
-use embassy_stm32::adc::{Adc, SampleTime};
+use embassy_stm32::adc::{Adc, Config, SampleTime};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(Default::default());
     info!("Hello World!");
 
-    let mut adc = Adc::new(p.ADC1);
+    let mut adc = Adc::new_blocking(p.ADC1, Config::default());
     let mut pin = p.PA3;
 
     let mut vrefint = adc.enable_vrefint();

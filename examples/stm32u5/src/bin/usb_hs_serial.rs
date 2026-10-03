@@ -44,14 +44,14 @@ async fn main(_spawner: Spawner) {
     let p = embassy_stm32::init(config);
 
     // Create the driver, from the HAL.
-    let mut ep_out_buffer = [0u8; 256];
+    let mut ep_out_buffer = [0u8; 1024];
     let mut config = embassy_stm32::usb::Config::default();
     // Do not enable vbus_detection. This is a safe default that works in all boards.
     // However, if your USB device is self-powered (can stay powered on if USB is unplugged), you need
     // to enable vbus_detection to comply with the USB spec. If you enable it, the board
     // has to support it or USB won't work at all. See docs on `vbus_detection` for details.
     config.vbus_detection = false;
-    let driver = Driver::new_hs(p.USB_OTG_HS, Irqs, p.PA12, p.PA11, &mut ep_out_buffer, config);
+    let driver = Driver::new_hs(p.USB_OTG_HS, p.PA12, p.PA11, Irqs, &mut ep_out_buffer, config);
 
     // Create embassy-usb Config
     let mut config = embassy_usb::Config::new(0xc0de, 0xcafe);
@@ -77,7 +77,8 @@ async fn main(_spawner: Spawner) {
     );
 
     // Create classes on the builder.
-    let mut class = CdcAcmClass::new(&mut builder, &mut state, 64);
+    // High-speed bulk endpoints must have a max packet size of 512 bytes.
+    let mut class = CdcAcmClass::new(&mut builder, &mut state, 512);
 
     // Build the builder.
     let mut usb = builder.build();
@@ -112,7 +113,7 @@ impl From<EndpointError> for Disconnected {
 }
 
 async fn echo<'d, T: Instance + 'd>(class: &mut CdcAcmClass<'d, Driver<'d, T>>) -> Result<(), Disconnected> {
-    let mut buf = [0; 64];
+    let mut buf = [0; 512];
     loop {
         let n = class.read_packet(&mut buf).await?;
         let data = &buf[..n];

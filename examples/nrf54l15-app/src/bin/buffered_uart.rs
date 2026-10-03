@@ -2,11 +2,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_nrf::buffered_uarte::{self, BufferedUarte};
 use embassy_nrf::{bind_interrupts, peripherals, uarte};
 use embedded_io_async::Write;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 bind_interrupts!(struct Irqs {
     SERIAL20 => buffered_uarte::InterruptHandler<peripherals::SERIAL20>;
@@ -24,12 +25,12 @@ async fn main(_spawner: Spawner) {
 
     let mut u = BufferedUarte::new(
         p.SERIAL20,
-        p.P1_12,
         p.P1_13,
+        p.P1_12,
         Irqs,
-        config,
-        &mut rx_buffer,
         &mut tx_buffer,
+        &mut rx_buffer,
+        config,
     );
 
     info!("uarte initialized!");

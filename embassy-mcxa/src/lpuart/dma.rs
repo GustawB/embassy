@@ -4,10 +4,11 @@ use embassy_hal_internal::Peri;
 
 use super::*;
 use crate::dma::{
-    Channel, DMA_MAX_TRANSFER_SIZE, DmaChannel, DmaRequest, InvalidParameters, RingBuffer, TransferOptions,
+    Channel, DMA_MAX_TRANSFER_SIZE, DmaChannel, DmaRequest, InvalidParameters, PeripheralReadOperation,
+    PeripheralWriteOperation, RingBuffer, TransferOptions,
 };
 use crate::gpio::AnyPin;
-use crate::pac::lpuart::{Tc, Tdre};
+use crate::pac::lpuart::{Rxflush, Tc, Tdre};
 
 /// DMA mode.
 pub struct Dma<'d> {
@@ -128,6 +129,38 @@ impl<'a> LpuartTx<'a, Dma<'a>> {
         ))
     }
 
+    /// Create a new LPUART TX driver with DMA support and CTS flow control.
+    ///
+    /// Any external pin will be placed into Disabled state upon Drop.
+    pub fn new_async_with_dma_cts<T: Instance>(
+        _inner: Peri<'a, T>,
+        tx_pin: Peri<'a, impl TxPin<T>>,
+        cts_pin: Peri<'a, impl CtsPin<T>>,
+        tx_dma_ch: Peri<'a, impl Channel>,
+        config: Config,
+    ) -> Result<Self, Error> {
+        tx_pin.as_tx();
+        cts_pin.as_cts();
+        let tx_pin: Peri<'a, AnyPin> = tx_pin.into();
+        let cts_pin: Peri<'a, AnyPin> = cts_pin.into();
+
+        // Initialize LPUART with TX enabled, RX disabled, CTS flow control enabled
+        let wg = Lpuart::<Dma<'_>>::init::<T>(true, false, true, false, config)?;
+
+        let dma = DmaChannel::new(tx_dma_ch);
+        dma.enable_interrupt();
+
+        Ok(Self::new_inner::<T>(
+            tx_pin,
+            Some(cts_pin),
+            Dma {
+                dma,
+                request: T::TX_DMA_REQUEST,
+            },
+            wg,
+        ))
+    }
+
     /// Write data using DMA.
     ///
     /// This configures the DMA channel for a memory-to-peripheral transfer
@@ -154,6 +187,52 @@ impl<'a> LpuartTx<'a, Dma<'a>> {
         }
 
         Ok(total)
+    }
+
+    /// Write multiple buffers using one scatter-gather DMA transfer.
+    pub async fn write_scatter_gather<const N: usize>(&mut self, bufs: [&[u8]; N]) -> Result<usize, Error> {
+        let len = bufs.iter().map(|buf| buf.len()).sum();
+        let peri_addr = self.info.regs().data().as_ptr() as *mut u8;
+        let mut sequence = PeripheralWriteOperation::new_sequence(bufs.map(|buf| (buf, peri_addr)))?;
+        let dma = &mut self.mode.dma;
+
+        unsafe {
+            // Clean up channel state
+            dma.disable_request();
+            dma.clear_done();
+            dma.clear_interrupt();
+
+            // Set DMA request source from instance type (type-safe)
+            dma.set_request_source(self.mode.request);
+
+            // Configure TCD for memory-to-peripheral scatter-gather transfer
+            dma.setup_write_to_peripheral_scatter_gather(&mut sequence)?;
+
+            // Enable UART TX DMA request
+            self.info.regs().baud().modify(|w| w.set_tdmae(true));
+
+            // Enable DMA channel request
+            dma.enable_request();
+        }
+
+        // Create guard that will abort DMA if this future is dropped
+        let guard = TxDmaGuard::new(dma.reborrow(), self.info);
+
+        // Wait for completion asynchronously
+        core::future::poll_fn(|cx| {
+            let _ = guard.dma.wait_cell().poll_wait(cx);
+            if guard.dma.is_done() {
+                core::task::Poll::Ready(())
+            } else {
+                core::task::Poll::Pending
+            }
+        })
+        .await;
+
+        // Transfer completed successfully - clean up without aborting
+        guard.complete();
+
+        Ok(len)
     }
 
     /// Internal helper to write a single chunk (max 0x7FFF bytes) using DMA.
@@ -205,7 +284,7 @@ impl<'a> LpuartTx<'a, Dma<'a>> {
     /// Blocking write (fallback when DMA is not needed)
     pub fn blocking_write(&mut self, buf: &[u8]) -> Result<(), Error> {
         for &byte in buf {
-            while self.info.regs().stat().read().tdre() == Tdre::TXDATA {}
+            while self.info.regs().stat().read().tdre() == Tdre::Txdata {}
             self.info.regs().data().write(|w| w.0 = byte as u32);
         }
         Ok(())
@@ -214,7 +293,15 @@ impl<'a> LpuartTx<'a, Dma<'a>> {
     /// Flush TX blocking
     pub fn blocking_flush(&mut self) -> Result<(), Error> {
         while self.info.regs().water().read().txcount() != 0 {}
-        while self.info.regs().stat().read().tc() == Tc::ACTIVE {}
+        while self.info.regs().stat().read().tc() == Tc::Active {}
+        Ok(())
+    }
+    /// Wait until all written bytes have been fully transmitted on the wire.
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        // DMA mode doesn't bind the LPUART interrupt, so there's no waker for TC. Poll instead.
+        while self.info.regs().water().read().txcount() != 0 || self.info.regs().stat().read().tc() == Tc::Active {
+            embassy_futures::yield_now().await;
+        }
         Ok(())
     }
 }
@@ -250,6 +337,38 @@ impl<'a> LpuartRx<'a, Dma<'a>> {
         ))
     }
 
+    /// Create a new LPUART RX driver with DMA support and RTS flow control.
+    ///
+    /// Any external pin will be placed into Disabled state upon Drop.
+    pub fn new_async_with_dma_rts<T: Instance>(
+        _inner: Peri<'a, T>,
+        rx_pin: Peri<'a, impl RxPin<T>>,
+        rts_pin: Peri<'a, impl RtsPin<T>>,
+        rx_dma_ch: Peri<'a, impl Channel>,
+        config: Config,
+    ) -> Result<Self, Error> {
+        rx_pin.as_rx();
+        rts_pin.as_rts();
+        let rx_pin: Peri<'a, AnyPin> = rx_pin.into();
+        let rts_pin: Peri<'a, AnyPin> = rts_pin.into();
+
+        // Initialize LPUART with TX disabled, RX enabled, RTS flow control enabled
+        let wg = Lpuart::<Dma<'_>>::init::<T>(false, true, false, true, config)?;
+
+        let dma = DmaChannel::new(rx_dma_ch);
+        dma.enable_interrupt();
+
+        Ok(Self::new_inner::<T>(
+            rx_pin,
+            Some(rts_pin),
+            Dma {
+                dma,
+                request: T::RX_DMA_REQUEST,
+            },
+            wg,
+        ))
+    }
+
     /// Read data using DMA.
     ///
     /// This configures the DMA channel for a peripheral-to-memory transfer
@@ -276,6 +395,54 @@ impl<'a> LpuartRx<'a, Dma<'a>> {
         }
 
         Ok(total)
+    }
+
+    /// Read into multiple buffers using one scatter-gather DMA transfer.
+    pub async fn read_scatter_gather<const N: usize>(&mut self, bufs: [&mut [u8]; N]) -> Result<usize, Error> {
+        // First check if there are any RX errors
+        check_and_clear_rx_errors(self.info)?;
+
+        let len = bufs.iter().map(|buf| buf.len()).sum();
+        let peri_addr = self.info.regs().data().as_ptr() as *const u8;
+        let mut sequence = PeripheralReadOperation::new_sequence(bufs.map(|buf| (peri_addr, buf)))?;
+        let rx_dma = &mut self.mode.dma;
+
+        unsafe {
+            // Clean up channel state
+            rx_dma.disable_request();
+            rx_dma.clear_done();
+            rx_dma.clear_interrupt();
+
+            // Set DMA request source from instance type (type-safe)
+            rx_dma.set_request_source(self.mode.request);
+
+            rx_dma.setup_read_from_peripheral_scatter_gather(&mut sequence)?;
+
+            // Enable UART RX DMA request
+            self.info.regs().baud().modify(|w| w.set_rdmae(true));
+
+            // Enable DMA channel request
+            rx_dma.enable_request();
+        }
+
+        // Create guard that will abort DMA if this future is dropped
+        let guard = RxDmaGuard::new(rx_dma.reborrow(), self.info);
+
+        // Wait for completion asynchronously
+        core::future::poll_fn(|cx| {
+            let _ = guard.dma.wait_cell().poll_wait(cx);
+            if guard.dma.is_done() {
+                core::task::Poll::Ready(())
+            } else {
+                core::task::Poll::Pending
+            }
+        })
+        .await;
+
+        // Transfer completed successfully - clean up without aborting
+        guard.complete();
+
+        Ok(len)
     }
 
     /// Internal helper to read a single chunk (max 0x7FFF bytes) using DMA.
@@ -339,6 +506,16 @@ impl<'a> LpuartRx<'a, Dma<'a>> {
                 check_and_clear_rx_errors(self.info)?;
             }
         }
+        Ok(())
+    }
+
+    /// Discard all bytes currently buffered in the hardware RX FIFO.
+    pub fn blocking_flush(&mut self) -> Result<(), Error> {
+        self.info.regs().fifo().modify(|w| w.set_rxflush(Rxflush::RxfifoRst));
+
+        // Flushing is a recovery operation, so clear stale receive errors
+        // without reporting them to the next transfer.
+        let _ = check_and_clear_rx_errors(self.info);
         Ok(())
     }
 
@@ -506,6 +683,59 @@ impl<'a> Lpuart<'a, Dma<'a>> {
         })
     }
 
+    /// Create a new full-duplex LPUART DMA driver with RTS/CTS flow control.
+    ///
+    /// Any external pin will be placed into Disabled state upon Drop.
+    pub fn new_async_with_dma_rtscts<T: Instance>(
+        _inner: Peri<'a, T>,
+        tx_pin: Peri<'a, impl TxPin<T>>,
+        rx_pin: Peri<'a, impl RxPin<T>>,
+        cts_pin: Peri<'a, impl CtsPin<T>>,
+        rts_pin: Peri<'a, impl RtsPin<T>>,
+        tx_dma_ch: Peri<'a, impl Channel>,
+        rx_dma_ch: Peri<'a, impl Channel>,
+        config: Config,
+    ) -> Result<Self, Error> {
+        tx_pin.as_tx();
+        rx_pin.as_rx();
+        cts_pin.as_cts();
+        rts_pin.as_rts();
+
+        let tx_pin: Peri<'a, AnyPin> = tx_pin.into();
+        let rx_pin: Peri<'a, AnyPin> = rx_pin.into();
+        let cts_pin: Peri<'a, AnyPin> = cts_pin.into();
+        let rts_pin: Peri<'a, AnyPin> = rts_pin.into();
+
+        // Initialize LPUART with both TX and RX enabled, and both flow controls enabled
+        let wg = Lpuart::<Dma<'a>>::init::<T>(true, true, true, true, config)?;
+
+        let tx_dma = DmaChannel::new(tx_dma_ch);
+        let rx_dma = DmaChannel::new(rx_dma_ch);
+        tx_dma.enable_interrupt();
+        rx_dma.enable_interrupt();
+
+        Ok(Self {
+            tx: LpuartTx::new_inner::<T>(
+                tx_pin,
+                Some(cts_pin),
+                Dma {
+                    dma: tx_dma,
+                    request: T::TX_DMA_REQUEST,
+                },
+                wg.clone(),
+            ),
+            rx: LpuartRx::new_inner::<T>(
+                rx_pin,
+                Some(rts_pin),
+                Dma {
+                    dma: rx_dma,
+                    request: T::RX_DMA_REQUEST,
+                },
+                wg,
+            ),
+        })
+    }
+
     /// Write data using DMA
     pub async fn write(&mut self, buf: &[u8]) -> Result<usize, Error> {
         self.tx.write(buf).await
@@ -514,6 +744,12 @@ impl<'a> Lpuart<'a, Dma<'a>> {
     /// Read data using DMA
     pub async fn read(&mut self, buf: &mut [u8]) -> Result<usize, Error> {
         self.rx.read(buf).await
+    }
+    /// Flush TX.
+    ///
+    /// See [`LpuartTx::flush`] for more information.
+    pub async fn flush(&mut self) -> Result<(), Error> {
+        self.tx.flush().await
     }
 }
 
@@ -529,24 +765,22 @@ impl<'a> embedded_io_async::Write for LpuartTx<'a, Dma<'a>> {
     }
 
     async fn flush(&mut self) -> core::result::Result<(), Self::Error> {
-        // No-op, when DMA transfer is completed, it is also flushed.
-        Ok(())
+        self.flush().await
     }
 }
 
 impl<'a> embedded_io_async::Read for Lpuart<'a, Dma<'a>> {
     async fn read(&mut self, buf: &mut [u8]) -> core::result::Result<usize, Self::Error> {
-        self.rx.read(buf).await
+        self.read(buf).await
     }
 }
 
 impl<'a> embedded_io_async::Write for Lpuart<'a, Dma<'a>> {
     async fn write(&mut self, buf: &[u8]) -> core::result::Result<usize, Self::Error> {
-        self.tx.write(buf).await
+        self.write(buf).await
     }
 
     async fn flush(&mut self) -> core::result::Result<(), Self::Error> {
-        // No-op, when DMA transfer is completed, it is also flushed.
-        self.tx.flush().await
+        self.flush().await
     }
 }

@@ -7,11 +7,12 @@
 #![no_main]
 
 use defmt::*;
+use defmt_rtt as _;
 use embassy_executor::Spawner;
 use embassy_stm32::Config;
-use embassy_stm32::adc::{Adc, SampleTime};
+use embassy_stm32::adc::{Adc, AdcChannel, SampleTime};
 use embassy_time::Timer;
-use {defmt_rtt as _, panic_probe as _};
+use panic_probe as _;
 
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
@@ -32,14 +33,13 @@ async fn main(_spawner: Spawner) {
     }
     let p = embassy_stm32::init(config);
 
-    let mut adc = Adc::new(p.ADC1, Default::default());
+    let mut adc = Adc::new_blocking(p.ADC1, Default::default());
+    // A (positive pin, negative pin) tuple is a differential channel.
     let mut differential_channel = (p.PA0, p.PA1);
 
-    // can also use
-    // adc.set_differential_channel(1, true);
     info!("adc initialized");
     loop {
-        let measured = adc.blocking_read(&mut differential_channel, SampleTime::Cycles2475);
+        let measured = adc.blocking_read(differential_channel.reborrow_adc(), SampleTime::Cycles2475);
         info!("data: {}", measured);
         Timer::after_millis(500).await;
     }
