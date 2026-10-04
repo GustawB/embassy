@@ -12,6 +12,8 @@ use crate::chip::interrupt::typelevel::Interrupt;
 use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
+use crate::time_driver::deadline_out_of_range;
+use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
@@ -23,7 +25,7 @@ use paste::paste;
 // 1074339840 is the start address of registers for AON_RTC.
 // cc2650 crate calls it RegisterBlock; I took this
 // addres from said crate.
-define_peri!(Aon_rtc, aon_rtc, 1074339840);
+define_peri!(AonRtc, aon_rtc, 1074339840);
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
@@ -64,7 +66,7 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             };
             s.clear_next_deadline();
             s.rtc_waker.wake();
-        } else if next_deadline.secs < curr_secs + 0x10000 {
+        } else if !deadline_out_of_range(curr_secs, next_deadline.secs) {
             // There won't be any more overflows
             let new_time = (next_deadline.secs << 16) | (next_deadline.subsecs >> 16);
             unsafe { driverlib::AONRTCCompareValueSet(driverlib::AON_RTC_CH0, new_time) };
@@ -85,6 +87,7 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
     type Interrupt: interrupt::typelevel::Interrupt;
 }
 
+#[cfg(not(feature = "time-driver"))]
 macro_rules! impl_rtc {
     ($type:ident, $irq:ident) => {
         impl crate::rtc::SealedInstance for peripherals::$type {
@@ -117,6 +120,7 @@ pub(crate) struct State {
 unsafe impl Sync for State {}
 
 impl State {
+    #[cfg(not(feature = "time-driver"))]
     pub(crate) const fn new() -> Self {
         Self {
             rtc_waker: AtomicWaker::new(),
@@ -191,12 +195,22 @@ impl<'a, T: Instance> Rtc<'a, T> {
 
         compiler_fence(Ordering::SeqCst);
 
-        if next_secs.wrapping_sub(curr_secs) >= 0x10000 || (curr_secs & 0xFFFF) > (next_secs & 0xFFFF) {
+        if deadline_out_of_range(curr_secs, next_secs) {
             unsafe { driverlib::AONRTCCompareValueSet(driverlib::AON_RTC_CH0, u32::MAX) };
         } else {
             let new_time = (next_secs << 16) | (next_subsecs >> 16);
             unsafe { driverlib::AONRTCCompareValueSet(driverlib::AON_RTC_CH0, new_time) };
         }
+
+        let drop = OnDrop::new(move || {
+            critical_section::with(|_cs| {
+                unsafe {
+                    driverlib::AONRTCChannelDisable(driverlib::AON_RTC_CH0);
+                    self.state.clear_next_deadline();
+                    driverlib::AONRTCEventClear(driverlib::AON_RTC_CH0);
+                };
+            })
+        });
 
         let combined_next_time = combine_time(next_secs, next_subsecs);
         let _ = poll_fn(|cx| {
@@ -209,6 +223,7 @@ impl<'a, T: Instance> Rtc<'a, T> {
             Poll::Pending
         })
         .await;
+        drop.defuse();
     }
 
     /// Returns seconds and milliseconds passed since boot.
@@ -238,8 +253,7 @@ impl<'a, T: Instance> Rtc<'a, T> {
 
         let (curr_secs, curr_subsecs) = get_curr_time();
         let mut next_secs = curr_secs + (milliseconds / 1000);
-        // 1000 ~ 2^10; curr_subsecs are 32bit, so we need to shift by 22
-        let next_subsecs = curr_subsecs.wrapping_add((milliseconds % 1000) << 22);
+        let next_subsecs = curr_subsecs.wrapping_add(((milliseconds % 1000) as u64 * (1u64 << 32) / 1000) as u32);
         if next_subsecs < curr_subsecs {
             // Overflow
             next_secs += 1;
@@ -253,13 +267,15 @@ impl<'a, T: Instance> Rtc<'a, T> {
     pub async fn wakeup_at(&mut self, seconds: u32, milliseconds: u32) {
         let (curr_secs, curr_subsecs) = get_curr_time();
         let combined_curr_time = combine_time(curr_secs, curr_subsecs);
-        let combined_new_time = combine_time(seconds, milliseconds << 5);
+        let next_subsecs = ((milliseconds % 1000) as u64 * (1u64 << 32) / 1000) as u32;
+        let combined_new_time = combine_time(seconds, next_subsecs);
         if combined_curr_time >= combined_new_time {
             return;
         }
 
-        self.internal_sleep(curr_secs, seconds, milliseconds).await;
+        self.internal_sleep(curr_secs, seconds, next_subsecs).await;
     }
 }
 
+#[cfg(not(feature = "time-driver"))]
 pub(crate) use impl_rtc;

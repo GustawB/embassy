@@ -12,6 +12,7 @@ use core::sync::atomic::AtomicBool;
 use core::sync::atomic::Ordering;
 use core::sync::atomic::compiler_fence;
 use core::task::Poll;
+use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
@@ -21,7 +22,7 @@ use paste::paste;
 // addres from said crate.
 define_peri!(Gpt0, gpt0, 1073807360);
 
-const CLOCK_FREQUENCY: u64 = 48000000;
+const OVERFLOW_CYCLES: u64 = 1u64 << 32;
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
@@ -34,40 +35,34 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let irq_mask = GPT0.mis.read();
 
         unsafe {
-            GPT0.iclr.modify(|_r, w| w.bits(u32::MAX));
+            GPT0.iclr.write(|w| w.bits(irq_mask.bits()));
         }
 
-        // SAFETY: interrupts are enabled ONLY IF transaction is set.
-        let mut st = s.get_curr_transaction().unwrap();
+        let Some(mut st) = s.get_curr_transaction() else { return };
 
+        // Match register holds deadline for the whole sleep, so the match
+        // fires once per lap. We never touch it here, so there is no
+        // read-then-set race with the running counter.
+        // Overflow is handled first, so a timeout and a match landing in the
+        // same IRQ are counted in the right order.
         if irq_mask.tatomis().bit_is_set() {
-            // Overflow happened, update overflow count and check it we met the limit.
+            // Overflow happened, update overflow count.
             st.overflow_count += 1;
             s.set_new_transaction(st);
-            if st.overflow_count >= st.overflow_limit {
-                let curr_time = unsafe { driverlib::TimerValueGet(driverlib::GPT0_BASE, driverlib::TIMER_A) };
-                if curr_time >= st.final_deadline {
-                    unsafe {
-                        driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
-                    };
-                    s.transaction_finished.store(true, Ordering::Release);
-                    s.gpt_waker.wake();
-                    return;
-                }
-
-                unsafe {
-                    driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
-                };
-                GPT0.tamr.modify(|_r, w| w.tamie().en());
-            } else {
-                unsafe {
-                    driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
-                };
-            }
         }
 
-        if irq_mask.tammis().bit_is_set() {
-            // Match interrupt fired, we finished the sleep transaction.
+        // Match and overflow in the same IRQ: if the counter is still below the deadline,
+        // the match fired before the overflow, i.e. in the previous lap.
+        let stale_match = irq_mask.tatomis().bit_is_set()
+            && unsafe { driverlib::TimerValueGet(driverlib::GPT0_BASE, driverlib::TIMER_A) } < st.deadline;
+
+        // Overflowing past the final lap means we've missed its match; the deadline
+        // has already passed, so finish instead of waiting forever.
+        let missed_final_match = st.overflow_count > st.overflow_limit;
+
+        if (irq_mask.tammis().bit_is_set() && !stale_match && st.overflow_count == st.overflow_limit)
+            || missed_final_match
+        {
             s.clear_transaction();
             unsafe {
                 driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
@@ -105,15 +100,15 @@ macro_rules! impl_gpt {
 
 #[derive(Clone, Copy)]
 pub(crate) struct SleepTransaction {
-    pub(crate) final_deadline: u32,
+    pub(crate) deadline: u32,
     pub(crate) overflow_limit: u32,
     pub(crate) overflow_count: u32,
 }
 
 impl SleepTransaction {
-    pub(crate) fn new(final_deadline: u32, overflow_limit: u32) -> Self {
+    pub(crate) fn new(deadline: u32, overflow_limit: u32) -> Self {
         Self {
-            final_deadline,
+            deadline,
             overflow_limit,
             overflow_count: 0,
         }
@@ -200,26 +195,39 @@ impl<'a, T: Instance> Gpt<'a, T> {
     }
 
     async fn sleep_internal(&self, st: SleepTransaction) {
+        // The counter starts at 0, so a zero deadline might never produce a match.
+        if st.deadline == 0 && st.overflow_limit == 0 {
+            return;
+        }
+
         unsafe {
             driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
+
+            // Disabling the timer as the first op is crucial for e.g. timeout counting.
+            compiler_fence(Ordering::SeqCst);
+
             GPT0.tav.reset();
 
-            //driverlib::TimerLoadSet(driverlib::GPT0_BASE, driverlib::TIMER_A);
-            if st.overflow_limit == 0 {
-                // No overflow, we immediately want to seel for the specified amount.
-                driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.final_deadline);
-                GPT0.tamr.modify(|_r, w| w.tamie().en());
-            } else {
-                // There is overflow, so we first need to sleep for u32::MAX for
-                // SleepTransaction::overflow_limit times.
-                driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, u32::MAX);
-                GPT0.tamr.modify(|_r, w| w.tamie().dis());
-            }
+            // Match stays at deadline for the whole sleep; the IRQ handler
+            // ignores matches until SleepTransaction::overflow_limit laps have passed.
+            driverlib::TimerMatchSet(driverlib::GPT0_BASE, driverlib::TIMER_A, st.deadline);
+            GPT0.tamr.modify(|_r, w| w.tamie().en());
             self.state.set_new_transaction(st);
 
             compiler_fence(Ordering::SeqCst);
             driverlib::TimerEnable(driverlib::GPT0_BASE, driverlib::TIMER_A);
         };
+
+        let drop = OnDrop::new(move || {
+            critical_section::with(|_cs| {
+                unsafe {
+                    driverlib::TimerDisable(driverlib::GPT0_BASE, driverlib::TIMER_A);
+                    self.state.clear_transaction();
+                    self.state.transaction_finished.store(false, Ordering::SeqCst);
+                    GPT0.iclr.modify(|_r, w| w.bits(u32::MAX));
+                };
+            })
+        });
 
         let _ = poll_fn(|cx| {
             self.state.gpt_waker.register(cx.waker());
@@ -233,24 +241,27 @@ impl<'a, T: Instance> Gpt<'a, T> {
             }
         })
         .await;
+        drop.defuse();
     }
 
     /// Sleeps for the specified amount of time in seconds.
     pub async fn sleep(&mut self, seconds: u32) {
-        let sleep_in_hz = (seconds as u64) * CLOCK_FREQUENCY;
+        let clock_frequency = unsafe { driverlib::SysCtrlClockGet() } as u64;
+        let sleep_in_hz = (seconds as u64) * clock_frequency;
         let st = SleepTransaction::new(
-            (sleep_in_hz % (u32::MAX as u64)) as u32,
-            (sleep_in_hz / (u32::MAX as u64)) as u32,
+            (sleep_in_hz % OVERFLOW_CYCLES) as u32,
+            (sleep_in_hz / OVERFLOW_CYCLES) as u32,
         );
         self.sleep_internal(st).await;
     }
 
     /// Sleeps for the specified amount of time in milliseconds.
     pub async fn sleep_millis(&mut self, milliseconds: u32) {
-        let sleep_in_hz = (milliseconds as u64) * CLOCK_FREQUENCY / 1000;
+        let clock_frequency = unsafe { driverlib::SysCtrlClockGet() } as u64;
+        let sleep_in_hz = (milliseconds as u64) * clock_frequency / 1000;
         let st = SleepTransaction::new(
-            (sleep_in_hz % (u32::MAX as u64)) as u32,
-            (sleep_in_hz / (u32::MAX as u64)) as u32,
+            (sleep_in_hz % OVERFLOW_CYCLES) as u32,
+            (sleep_in_hz / OVERFLOW_CYCLES) as u32,
         );
         self.sleep_internal(st).await;
     }

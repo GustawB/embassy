@@ -12,10 +12,8 @@ pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
 pub mod prcm;
-#[cfg(not(feature = "embassy-time"))]
 pub mod rtc;
-#[cfg(feature = "embassy-time")]
-pub mod time_driver;
+mod time_driver;
 pub mod uart;
 pub mod udma;
 
@@ -78,7 +76,7 @@ macro_rules! define_peri {
 
             paste! {
 const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
-                pub(super) static [<$name:upper>]: $name = $name([<$name:upper _REGISTER_BLOCK_ADDR>] as *const _);
+                pub(super) static [<$name:snake:upper>]: $name = $name([<$name:upper _REGISTER_BLOCK_ADDR>] as *const _);
             }
 
             impl Deref for $name {
@@ -94,7 +92,7 @@ const [<$name:upper _REGISTER_BLOCK_ADDR>]: usize = $addr;
                 }
             }
         }
-        paste! { use internals::[<$name:upper>]; }
+        paste! { use internals::[<$name:snake:upper>]; }
     };
 }
 pub(crate) use define_peri;
@@ -112,7 +110,7 @@ pub fn init() -> Peripherals {
 
     prcm.enable_clocks(prcm::Clocks::empty().gpio().uart().gpt().dma().crypto().i2c());
 
-    #[cfg(feature = "embassy-time")]
+    #[cfg(feature = "time-driver")]
     time_driver::init();
 
     Peripherals::take()

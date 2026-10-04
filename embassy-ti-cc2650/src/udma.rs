@@ -25,7 +25,7 @@ const UART0_TX_CHANNEL: u32 = 2;
 // 0x40020000 is the start address of registers for UDMA0.
 // cc2650 crate calls it RegisterBlock; I took this
 // address from said crate.
-define_peri!(IUdma, udma0, 0x40020000);
+define_peri!(InternalUdma, udma0, 0x40020000);
 
 pub(crate) static UDMA: Udma = Udma {};
 
@@ -42,17 +42,17 @@ impl Udma {
         // `w.baseptr()` performs shift left 10 bits on your argument,
         // probably because 10 least significant bits on CTRL register
         // are reserved.
-        IUDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
+        INTERNAL_UDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
 
-        IUDMA.reqdone.write(|w| unsafe { w.chnls().bits(u32::MAX) });
+        INTERNAL_UDMA.reqdone.write(|w| unsafe { w.chnls().bits(u32::MAX) });
 
-        IUDMA.cfg.write(|w| w.masterenable().set_bit());
+        INTERNAL_UDMA.cfg.write(|w| w.masterenable().set_bit());
     }
 
     #[inline]
     #[allow(unused)]
     pub(crate) fn disable(&self) {
-        IUDMA.cfg.write(|w| w.masterenable().clear_bit());
+        INTERNAL_UDMA.cfg.write(|w| w.masterenable().clear_bit());
     }
 
     #[inline]
@@ -201,25 +201,25 @@ struct ChannelControlEntry<KIND: ChannelControlEntryKind, const INDEX: u32> {
 impl<const INDEX: u32> ChannelControlEntry<Primary, INDEX> {
     #[allow(unused)]
     fn software_request(&self) {
-        IUDMA.softreq.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+        INTERNAL_UDMA.softreq.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
     }
 
     fn is_request_done(&self) -> bool {
-        IUDMA.reqdone.read().chnls().bits() & (1 << INDEX) != 0
+        INTERNAL_UDMA.reqdone.read().chnls().bits() & (1 << INDEX) != 0
     }
 
     fn request_done_clear(&self) {
-        IUDMA.reqdone.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+        INTERNAL_UDMA.reqdone.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
     }
 
     fn request_done_mask(&self) {
-        IUDMA
+        INTERNAL_UDMA
             .donemask
             .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() | (1 << INDEX)) })
     }
 
     fn request_done_unmask(&self) {
-        IUDMA
+        INTERNAL_UDMA
             .donemask
             .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() & !(1 << INDEX)) })
     }
