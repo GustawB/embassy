@@ -17,10 +17,7 @@ use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::waitqueue::AtomicWaker;
 use paste::paste;
 
-// 1073807360 is the start address of registers for GPT0.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(Gpt0, gpt0, 1073807360);
+define_peri!(Gpt0, gpt0, 0x40010000);
 
 const OVERFLOW_CYCLES: u64 = 1u64 << 32;
 

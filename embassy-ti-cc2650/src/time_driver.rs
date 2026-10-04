@@ -1,18 +1,18 @@
-// ti-cc2650 has a 70-bit RTC timer, with 64 bits accessible.
-// This gives 32 bits for seconds, and 32 bits for "subseconds".
-// However, the compare register we use to generate events
-// has only 32 bits (16:16). So, the idea is that if we want
-// to wait for longer than will fit in this compare register,
-// we set it to u32::MAX. Then, executing SYNC after wakeup
-// in the interrupt handler should overflow the part against
-// which the compare register does the comparison (16 lower bits of secs:16 upper bits of subsecs).
-// Then, if the time until we want to sleep will "fit" in the current timeframe
-// (we compare it with the full 64bit time), we set the compare register to the expected value.
-// Otherwise, we set the compare register to u32::MAX again.
-//
-// The above is the general idea; with embassy-time, we have to account for
-// scheduling loop. Luckily, this is simple as it's just a matter
-// of updating the compare register with the new value.
+//! ti-cc2650 has a 70-bit RTC timer, with 64 bits accessible.
+//! This gives 32 bits for seconds, and 32 bits for "subseconds".
+//! However, the compare register we use to generate events
+//! has only 32 bits (16:16). So, the idea is that if we want
+//! to wait for longer than will fit in this compare register,
+//! we set it to u32::MAX. Then, executing SYNC after wakeup
+//! in the interrupt handler should overflow the part against
+//! which the compare register does the comparison (16 lower bits of secs:16 upper bits of subsecs).
+//! Then, if the time until we want to sleep will "fit" in the current timeframe
+//! (we compare it with the full 64bit time), we set the compare register to the expected value.
+//! Otherwise, we set the compare register to u32::MAX again.
+//!
+//! The above is the general idea; with embassy-time, we have to account for
+//! scheduling loop. Luckily, this is simple as it's just a matter
+//! of updating the compare register with the new value.
 
 /// Returns true if `new_secs` can't be represented in the 16:16 compare register
 /// relative to `curr_secs`, i.e. we have to wait for an overflow first.
@@ -39,10 +39,7 @@ mod driver {
 
     use super::deadline_out_of_range;
 
-    // 1074339840 is the start address of registers for AON_RTC.
-    // cc2650 crate calls it RegisterBlock; I took this
-    // addres from said crate.
-    define_peri!(AonRtc, aon_rtc, 1074339840);
+    define_peri!(AonRtc, aon_rtc, 0x40092000);
 
     #[inline]
     fn combine_time(secs: u32, subsecs: u32) -> u64 {

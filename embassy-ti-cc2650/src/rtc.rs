@@ -22,10 +22,7 @@ use paste::paste;
 // It is advised to use embassy-time though.
 // For a general description see time_driver.rs, logic is almost the same.
 
-// 1074339840 is the start address of registers for AON_RTC.
-// cc2650 crate calls it RegisterBlock; I took this
-// addres from said crate.
-define_peri!(AonRtc, aon_rtc, 1074339840);
+define_peri!(AonRtc, aon_rtc, 0x40092000);
 
 /// Interrupt handler.
 pub struct InterruptHandler<T: Instance> {
