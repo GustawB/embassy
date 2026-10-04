@@ -27,10 +27,8 @@ mod driver {
     use core::task::Waker;
 
     use crate::chip::interrupt;
-    use crate::define_peri;
     use crate::driverlib;
     use crate::pac;
-    use paste::paste;
 
     use critical_section::{CriticalSection, Mutex};
     use embassy_hal_internal::interrupt::InterruptExt;
@@ -39,7 +37,9 @@ mod driver {
 
     use super::deadline_out_of_range;
 
-    define_peri!(AonRtc, aon_rtc, 0x40092000);
+    fn rtc() -> pac::AON_RTC::AON_RTC {
+        pac::AON_RTC
+    }
 
     #[inline]
     fn combine_time(secs: u32, subsecs: u32) -> u64 {
@@ -73,8 +73,8 @@ mod driver {
                 driverlib::AONEventMcuWakeUpSet(driverlib::AON_EVENT_MCU_WU0, driverlib::AON_EVENT_RTC_CH0);
                 driverlib::AONRTCCombinedEventConfig(driverlib::AON_RTC_CH0);
 
-                AON_RTC.sec.reset();
-                AON_RTC.subsec.reset();
+                rtc().SEC().write(|w| w.set_VALUE(0));
+                rtc().SUBSEC().write(|w| w.set_VALUE(0));
 
                 driverlib::AONRTCEnable();
 
@@ -95,7 +95,7 @@ mod driver {
 
             // This will wait for at least one 32khz tick.
             // Add u32::MAX to that and we should overflow
-            AON_RTC.sync.read().bits();
+            rtc().SYNC().read();
 
             critical_section::with(|cs| {
                 let next_deadline = self.next_deadline.borrow(cs).get();
