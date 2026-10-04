@@ -1,3 +1,4 @@
+use crate::scif_driver::SCIFResult;
 use ti_cc2650_pac::AUX_TIMER::{regs, vals};
 use vcell::VolatileCell;
 
@@ -129,24 +130,20 @@ const fn SCIF_TASK_DATA() -> &'static SCIFTaskData {
 static AUX_TO_INDEX_TO_MCU_IOCFG_OFFSET_LUT: [u8; 0x10] =
     [120, 116, 112, 108, 104, 100, 96, 92, 28, 24, 20, 16, 12, 8, 4, 0];
 
-/*
- * Look-up table of data structure information for each task
- *
- * There is one entry per data structure (\c cfg, \c input, \c output and \c state) per task:
- * - [31:20] Data structure size (number of 16-bit words)
- * - [19:12] Buffer count (when 2+, first data structure is preceded by buffering control variables)
- * - [11:0] Address of the first data structure
- */
+/// Look-up table of data structure information for each task
+///
+/// There is one entry per data structure (`cfg`, `input`, `output` and `state`) per task:
+/// - `[31:20]` Data structure size (number of 16-bit words)
+/// - `[19:12]` Buffer count (when 2+, first data structure is preceded by buffering control variables)
+/// - `[11:0]` Address of the first data structure
 static SCIF_TASK_DATA_STRUCT_INFO_LUT: [u32; 0x4] = [
     //  cfg         input       output      state
     0x00000000, 0x300010E6, 0x00000000, 0x002016E6, // UART Emulator
 ];
 
-/*
- * Initilializes task resource hardware dependencies
- *
- * This function is called by the internal driver initialization function, \ref scifInit().
- */
+/// Initializes task resource hardware dependencies
+///
+/// This function is called by the internal driver initialization function, `Scif::scif_init`.
 unsafe fn scif_task_resource_init(scif: &Scif) {
     unsafe {
         scif.scif_init_io(2, AUXIOMODE_OUTPUT, 1, 1);
@@ -159,16 +156,14 @@ pub(crate) struct ScifUart {
 }
 
 impl ScifUart {
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self { scif: Scif::new() }
     }
 
-    /*
-     * Sets the UART baud rate
-     *
-     * This function must be called to start baud rate generation before or after starting the UART
-     * emulation task. This function can be called during operation to change the baud rate on-the-fly.
-     */
+    /// Sets the UART baud rate
+    ///
+    /// This function must be called to start baud rate generation before or after starting the UART
+    /// emulation task. This function can be called during operation to change the baud rate on-the-fly.
     pub(crate) fn uart_set_baud_rate(&self, baud_rate: u32) {
         // Start baud rate generation?
         if baud_rate > 0 {
@@ -211,7 +206,7 @@ impl ScifUart {
         }
     }
 
-    fn scif_uart_get_tx_fifo_count() -> u16 {
+    pub(crate) fn scif_uart_get_tx_fifo_count() -> u16 {
         let state = safe_packed_ref!(SCIF_TASK_DATA().uart_emulator.state);
         let mut tx_head = safe_packed_ref!(state.tx_head).get();
         let tx_tail = safe_packed_ref!(state.tx_tail).get();
@@ -219,10 +214,6 @@ impl ScifUart {
             tx_head += SCIF_UART_TX_BUFFER_LEN as u16;
         }
         tx_head - tx_tail
-    }
-
-    pub(crate) fn scif_uart_get_tx_fifo_free_slots() -> u16 {
-        SCIF_UART_TX_FIFO_MAX_COUNT as u16 - Self::scif_uart_get_tx_fifo_count()
     }
 
     unsafe fn aux_ctrl_register_consumer(clocks: u32) {
@@ -261,25 +252,30 @@ impl ScifUart {
             driverlib::AONWUCMcuPowerDownConfig(driverlib::AONWUC_CLOCK_SRC_LF);
             driverlib::AONWUCAuxPowerDownConfig(driverlib::AONWUC_CLOCK_SRC_LF);
 
-            self.scif.scif_init(Self::scif_driver_data(), 0x0000);
+            debug_assert!(matches!(
+                self.scif.scif_init(Self::scif_driver_data(), 0x0000),
+                SCIFResult::Success
+            ));
             self.scif.scif_reset_task_structs(
                 1 << SCIF_UART_EMULATOR_TASK_ID,
                 (1 << SCIFTaskStructType::SCIFStructCfg as u32)
                     | (1 << SCIFTaskStructType::SCIFStructInput as u32)
                     | (1 << SCIFTaskStructType::SCIFStructOutput as u32),
             );
+            debug_assert!(matches!(
+                self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID),
+                SCIFResult::Success
+            ));
             self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID);
 
             self.uart_set_baud_rate(SCIF_UART_BAUD_RATE);
         }
     }
 
-    /*
-     * Transmits two characters
-     *
-     * This function must not be called when the TX FIFO is full. Both characters use only one TX FIFO cell.
-     * Calling this function when the FIFO is full will cause overflow, without warning.
-     */
+    /// Transmits two characters
+    ///
+    /// This function must not be called when the TX FIFO is full. Both characters use only one TX FIFO cell.
+    /// Calling this function when the FIFO is full will cause overflow, without warning.
     pub(crate) unsafe fn scif_uart_tx_put_two_chars(c1: u8, c2: u8) {
         // Put the character
         let mut tx_head = safe_packed_ref!(SCIF_TASK_DATA().uart_emulator.state.tx_head).get();
@@ -294,12 +290,10 @@ impl ScifUart {
         safe_packed_ref!(SCIF_TASK_DATA().uart_emulator.state.tx_head).set(tx_head);
     }
 
-    /*
-     * Transmits the specified number of character
-     *
-     * This function must not be called with count higher than the number of free entries in the TX FIFO.
-     * Calling this function with too high count will cause overflow, without warning.
-     */
+    /// Transmits the specified number of character
+    ///
+    /// This function must not be called with count higher than the number of free entries in the TX FIFO.
+    /// Calling this function with too high count will cause overflow, without warning.
     pub(crate) unsafe fn scif_uart_tx_put_chars(buff: &[u8], count: u32) {
         let mut entry: u16;
 
@@ -326,5 +320,3 @@ impl ScifUart {
         safe_packed_ref!(SCIF_TASK_DATA().uart_emulator.state.tx_head).set(tx_head as u16);
     }
 }
-
-pub(crate) const SCIF_UART: ScifUart = ScifUart::new();

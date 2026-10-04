@@ -106,9 +106,9 @@ const SCIF_TASK_STRUCT_CTRL_SIZE: u32 = 3 * core::mem::size_of::<u16>() as u32;
 static SCIF_READY: AtomicBool = AtomicBool::new(false);
 
 /// The READY interrupt is implemented using INT_AON_AUX_SWEV0
-const INT_SCIF_CTRL_READY: pac::Interrupt = pac::Interrupt::UART1;
+const INT_SCIF_CTRL_READY: pac::Interrupt = pac::Interrupt::AUX_SWEV0;
 /// The ALERT interrupt is implemented using INT_AON_AUX_SWEV1
-const INT_SCIF_TASK_ALERT: pac::Interrupt = pac::Interrupt::AON_EVENT;
+const INT_SCIF_TASK_ALERT: pac::Interrupt = pac::Interrupt::AUX_SWEV1;
 
 pub(crate) struct Scif {
     pub(crate) aon_wuc: pac::AON_WUC::AON_WUC,
@@ -455,15 +455,15 @@ impl Scif {
     }
 
     fn osal_lock_ctrl_task_nbl() -> bool {
-        /*uint32_t key = !CPUcpsid();
-        if (osalCtrlTaskNblLocked) {
-            if (key) CPUcpsie();
-            return false;
-        } else {
-            osalCtrlTaskNblLocked = true;
-            if (key) CPUcpsie();
-            return true;
-        }*/
+        // uint32_t key = !CPUcpsid();
+        // if (osalCtrlTaskNblLocked) {
+        //     if (key) CPUcpsie();
+        //     return false;
+        // } else {
+        //     osalCtrlTaskNblLocked = true;
+        //     if (key) CPUcpsie();
+        //     return true;
+        // }
         return true;
     }
 
@@ -507,14 +507,14 @@ impl Scif {
 }
 
 #[interrupt]
-fn UART1() {
+fn AUX_SWEV0() {
     unsafe {
         Scif::ready_handler();
     };
 }
 
 #[interrupt]
-fn AON_EVENT() {
+fn AUX_SWEV1() {
     unsafe {
         Scif::alert_handler();
     };

@@ -2,7 +2,7 @@
 #![no_main]
 
 use embassy_executor::Spawner;
-use embassy_ti_cc2650::debug_print::debug_print;
+use embassy_ti_cc2650::debug_print::{DebugPrint, debug_print};
 use embassy_time::Timer;
 use panic_probe as _;
 
@@ -26,7 +26,8 @@ async fn fast_task() -> ! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    let _ = embassy_ti_cc2650::init();
+    let p = embassy_ti_cc2650::init();
+    let _debug_print = DebugPrint::new(p.P_28, p.P_29);
     spawner.spawn(slow_task().unwrap());
     spawner.spawn(fast_task().unwrap());
 }
