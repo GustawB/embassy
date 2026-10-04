@@ -56,12 +56,8 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
         let stale_match = irq_mask.tatomis().bit_is_set()
             && unsafe { driverlib::TimerValueGet(driverlib::GPT0_BASE, driverlib::TIMER_A) } < st.deadline;
 
-        // Overflowing past the final lap means we've missed its match; the deadline
-        // has already passed, so finish instead of waiting forever.
-        let missed_final_match = st.overflow_count > st.overflow_limit;
-
         if (irq_mask.tammis().bit_is_set() && !stale_match && st.overflow_count == st.overflow_limit)
-            || missed_final_match
+            || st.overflow_count > st.overflow_limit
         {
             s.clear_transaction();
             unsafe {
