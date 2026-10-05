@@ -44,7 +44,7 @@ pub(crate) enum SCIFTaskStructType {
 type SCIFVfptr = unsafe fn(&Scif);
 
 /// Sensor Controller internal data (located in AUX RAM)
-#[repr(packed)]
+#[repr(C, packed(2))]
 pub(crate) struct SCIFIntData {
     /// ID of currently executed Sensor Controller task
     #[allow(unused)]
@@ -58,7 +58,7 @@ pub(crate) struct SCIFIntData {
 }
 
 /// Sensor Controller generic task control (located in AUX RAM)
-#[repr(packed)]
+#[repr(C, packed(2))]
 pub(crate) struct SCIFTaskCtrl {
     /// Indicates which tasks are currently active (only valid while ready)
     bv_active_tasks: VolatileCell<u16>,

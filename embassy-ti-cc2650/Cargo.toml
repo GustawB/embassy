@@ -5,7 +5,7 @@ edition = "2024"
 links = "driverlib"
 
 [dependencies]
-ti-cc2650-pac = { git ="https://github.com/GustawB/ti-cc2650-pac.git", rev ="52de0154a6a8e5c735349dae0f212863c2b9b2bb"}
+ti-cc2650-pac = { git ="https://github.com/GustawB/ti-cc2650-pac.git", rev ="3ce45c92baed536a68d1a7e333eacc3f35860ee1"}
 cty = "0.2.2"
 embassy-hal-internal = { version = "0.5.0", path = "../embassy-hal-internal", features = ["cortex-m", "prio-bits-3"] }
 embassy-sync = { version = "0.8.0", path = "../embassy-sync" }

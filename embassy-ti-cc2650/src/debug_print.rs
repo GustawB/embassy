@@ -76,10 +76,14 @@ impl<'a> fmt::Write for LostBytesWriter<'a> {
     }
 }
 
+fn tx_free_bytes() -> u32 {
+    2 * (SCIF_UART_TX_FIFO_MAX_COUNT - ScifUart::scif_uart_get_tx_fifo_count() as u32)
+}
+
 /// Logging utility for cc2650, based on UART emulated with the sensor controller.
 /// It is safe to call from multiple tasks as it won't be preempted for a different task
 /// mid-execution. However, this is not true for interrupts, so this function shouldn't be
-/// called from ISRs.
+/// called from ISRs, and shouldn't be used with `InterruptExecutor`.
 pub fn debug_print(debug_message: &[u8]) {
     // This function should not be called from ISR.
     debug_assert!(crate::pac::CPU_SCS.ICSR().read().VECTACTIVE() == 0);
@@ -101,7 +105,7 @@ pub fn debug_print(debug_message: &[u8]) {
     if bytes_lost > 0 {
         debug_assert!(is_remaining == 0);
 
-        let free = 2 * SCIF_UART_TX_FIFO_MAX_COUNT - (ScifUart::scif_uart_get_tx_fifo_count() as u32);
+        let free = tx_free_bytes();
         if free < SC_UART_FREE_THRESHOLD {
             BYTES_LOST.store(bytes_lost + debug_msg_len, Ordering::Relaxed);
             return;
@@ -122,10 +126,11 @@ pub fn debug_print(debug_message: &[u8]) {
     }
 
     if debug_msg_len == 0 {
+        BYTES_LOST.store(bytes_lost, Ordering::Relaxed);
         return;
     }
 
-    let free = 2 * SCIF_UART_TX_FIFO_MAX_COUNT - (ScifUart::scif_uart_get_tx_fifo_count() as u32);
+    let free = tx_free_bytes();
     if free < debug_msg_len + is_remaining as u32 {
         BYTES_LOST.store(bytes_lost + debug_msg_len + is_remaining - free, Ordering::Relaxed);
 

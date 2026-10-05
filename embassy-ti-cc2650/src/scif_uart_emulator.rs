@@ -23,20 +23,20 @@ const SCIF_UART_EMULATOR_DIO_UART_TX: u32 = 28;
 
 const SCIF_UART_EMULATOR_TASK_ID: u32 = 0;
 
-pub const SCIF_UART_BAUD_RATE: u32 = 230400;
-pub const LOST_BUFFER_SIZE: usize = 16;
+const SCIF_UART_BAUD_RATE: u32 = 230400;
+pub(crate) const LOST_BUFFER_SIZE: usize = 18;
 
 type TxBuffer = [VolatileCell<u16>; SCIF_UART_TX_BUFFER_LEN];
 
 /// UART Emulator: Task input data structure
-#[repr(packed)]
+#[repr(C, packed(2))]
 struct SCIFUartEmulatorInput {
     /// TX FIFO ring buffer
     tx_buffer: TxBuffer,
 }
 
 /// UART Emulator: Task state structure
-#[repr(packed)]
+#[repr(C, packed(2))]
 struct SCIFUartEmulatorState {
     /// TX FIFO head index (updated by the application)
     tx_head: VolatileCell<u16>,
@@ -45,12 +45,12 @@ struct SCIFUartEmulatorState {
 }
 
 /// Sensor Controller task data (configuration, input buffer(s), output buffer(s) and internal state)
-#[repr(packed)]
+#[repr(C, packed(2))]
 struct SCIFTaskData {
     uart_emulator: UARTEmulator,
 }
 
-#[repr(packed)]
+#[repr(C, packed(2))]
 struct UARTEmulator {
     input: SCIFUartEmulatorInput,
     state: SCIFUartEmulatorState,
@@ -252,20 +252,19 @@ impl ScifUart {
             driverlib::AONWUCMcuPowerDownConfig(driverlib::AONWUC_CLOCK_SRC_LF);
             driverlib::AONWUCAuxPowerDownConfig(driverlib::AONWUC_CLOCK_SRC_LF);
 
-            debug_assert!(matches!(
-                self.scif.scif_init(Self::scif_driver_data(), 0x0000),
-                SCIFResult::Success
-            ));
+            let mut r = self.scif.scif_init(Self::scif_driver_data(), 0x0000);
+            debug_assert!(matches!(r, SCIFResult::Success));
+
             self.scif.scif_reset_task_structs(
                 1 << SCIF_UART_EMULATOR_TASK_ID,
                 (1 << SCIFTaskStructType::SCIFStructCfg as u32)
                     | (1 << SCIFTaskStructType::SCIFStructInput as u32)
                     | (1 << SCIFTaskStructType::SCIFStructOutput as u32),
             );
-            debug_assert!(matches!(
-                self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID),
-                SCIFResult::Success
-            ));
+
+            r = self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID);
+            debug_assert!(matches!(r, SCIFResult::Success));
+
             self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID);
 
             self.uart_set_baud_rate(SCIF_UART_BAUD_RATE);

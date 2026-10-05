@@ -16,9 +16,9 @@ pub mod gpt;
 pub mod prcm;
 pub mod rtc;
 #[cfg(feature = "debug-print")]
-pub mod scif_driver;
+mod scif_driver;
 #[cfg(feature = "debug-print")]
-pub mod scif_uart_emulator;
+mod scif_uart_emulator;
 mod time_driver;
 pub mod uart;
 pub mod udma;
