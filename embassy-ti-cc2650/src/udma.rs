@@ -14,18 +14,15 @@ use core::ops::Deref;
 use core::u32;
 use core::{ffi::c_void, marker::PhantomData, ptr::addr_of};
 
-use crate::define_peri;
 use crate::driverlib;
 use crate::pac;
 use core::cell::UnsafeCell;
-use paste::paste;
 
 const UART0_TX_CHANNEL: u32 = 2;
 
-// 0x40020000 is the start address of registers for UDMA0.
-// cc2650 crate calls it RegisterBlock; I took this
-// address from said crate.
-define_peri!(InternalUdma, udma0, 0x40020000);
+fn udma() -> pac::UDMA0::UDMA0 {
+    pac::UDMA0
+}
 
 pub(crate) static UDMA: Udma = Udma {};
 
@@ -36,23 +33,24 @@ impl Udma {
     // only in `uart_transfer_{tx,rx}`.
     #[inline(never)]
     pub(crate) fn enable(&self) {
+        let r = udma();
         // Set the pointer to the channel control map.
         let map_addr = addr_of!(CHANNEL_CONTROL_MAP) as u32;
 
-        // `w.baseptr()` performs shift left 10 bits on your argument,
-        // probably because 10 least significant bits on CTRL register
-        // are reserved.
-        INTERNAL_UDMA.ctrl.write(|w| unsafe { w.bits(map_addr) });
+        // BASEPTR is bits 31:10 of CTRL (the map is 1024-byte aligned),
+        // so the field takes the address shifted right by 10.
+        r.CTRL().write(|w| w.set_BASEPTR(map_addr >> 10));
 
-        INTERNAL_UDMA.reqdone.write(|w| unsafe { w.chnls().bits(u32::MAX) });
+        // REQDONE is write-1-to-clear.
+        r.REQDONE().write(|w| w.set_CHNLS(u32::MAX));
 
-        INTERNAL_UDMA.cfg.write(|w| w.masterenable().set_bit());
+        r.CFG().write(|w| w.set_MASTERENABLE(true));
     }
 
     #[inline]
     #[allow(unused)]
     pub(crate) fn disable(&self) {
-        INTERNAL_UDMA.cfg.write(|w| w.masterenable().clear_bit());
+        udma().CFG().write(|w| w.set_MASTERENABLE(false));
     }
 
     #[inline]
@@ -81,7 +79,7 @@ impl Udma {
         unsafe {
             (*CHANNEL_CONTROL_MAP).primary_channel_2.set_transfer(
                 src as *mut (),
-                &(*pac::UART0::ptr()).dr as *const pac::uart0::DR as *mut (),
+                pac::UART0.DR().as_ptr() as *mut (),
                 len as u32,
             );
             driverlib::uDMAChannelEnable(driverlib::UDMA0_BASE, UART0_TX_CHANNEL);
@@ -201,27 +199,23 @@ struct ChannelControlEntry<KIND: ChannelControlEntryKind, const INDEX: u32> {
 impl<const INDEX: u32> ChannelControlEntry<Primary, INDEX> {
     #[allow(unused)]
     fn software_request(&self) {
-        INTERNAL_UDMA.softreq.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+        udma().SOFTREQ().write(|w| w.set_CHNLS(1 << INDEX));
     }
 
     fn is_request_done(&self) -> bool {
-        INTERNAL_UDMA.reqdone.read().chnls().bits() & (1 << INDEX) != 0
+        udma().REQDONE().read().CHNLS() & (1 << INDEX) != 0
     }
 
     fn request_done_clear(&self) {
-        INTERNAL_UDMA.reqdone.write(|w| unsafe { w.chnls().bits(1 << INDEX) })
+        udma().REQDONE().write(|w| w.set_CHNLS(1 << INDEX));
     }
 
     fn request_done_mask(&self) {
-        INTERNAL_UDMA
-            .donemask
-            .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() | (1 << INDEX)) })
+        udma().DONEMASK().modify(|w| w.set_CHNLS(w.CHNLS() | (1 << INDEX)));
     }
 
     fn request_done_unmask(&self) {
-        INTERNAL_UDMA
-            .donemask
-            .modify(|r, w| unsafe { w.chnls().bits(r.chnls().bits() & !(1 << INDEX)) })
+        udma().DONEMASK().modify(|w| w.set_CHNLS(w.CHNLS() & !(1 << INDEX)));
     }
 }
 

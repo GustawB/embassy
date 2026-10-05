@@ -14,11 +14,10 @@
 //!   easy, as the receiver already handles the message discovery.
 
 use crate::chip::interrupt;
-use crate::define_peri;
 use crate::driverlib;
 use crate::interrupt::typelevel::Interrupt;
 use crate::pac;
-use crate::pac::uart0::ifls::RXSELW;
+use crate::pac::UART0::vals;
 use crate::udma::UDMA;
 use core::future;
 use core::future::poll_fn;
@@ -31,16 +30,10 @@ use embassy_hal_internal::{Peri, PeripheralType};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::waitqueue::AtomicWaker;
 use embassy_sync::zerocopy_channel;
-use paste::paste;
 use static_cell::StaticCell;
 
 /// CC2650 has 128 KB of FLASH.
 const FLASH_SIZE: u32 = 128 * 1024;
-
-// 0x40001000 is the start address of registers for UART0.
-// cc2650 crate calls it RegisterBlock; I took this
-// address from said crate.
-define_peri!(Uart, uart0, 0x40001000);
 
 const LF: u8 = b'\n';
 const CR: u8 = b'\r';
@@ -70,14 +63,14 @@ pub enum FIFOFillLevel {
     Level78,
 }
 
-fn fifo_fill_level_to_variant(fill_level: FIFOFillLevel) -> Option<RXSELW> {
+fn fifo_fill_level_to_variant(fill_level: FIFOFillLevel) -> Option<vals::RXSEL> {
     match fill_level {
         FIFOFillLevel::Disabled => None,
-        FIFOFillLevel::Level18 => Some(RXSELW::_1_8),
-        FIFOFillLevel::Level28 => Some(RXSELW::_2_8),
-        FIFOFillLevel::Level48 => Some(RXSELW::_4_8),
-        FIFOFillLevel::Level68 => Some(RXSELW::_6_8),
-        FIFOFillLevel::Level78 => Some(RXSELW::_7_8),
+        FIFOFillLevel::Level18 => Some(vals::RXSEL::_1_8),
+        FIFOFillLevel::Level28 => Some(vals::RXSEL::_2_8),
+        FIFOFillLevel::Level48 => Some(vals::RXSEL::_4_8),
+        FIFOFillLevel::Level68 => Some(vals::RXSEL::_6_8),
+        FIFOFillLevel::Level78 => Some(vals::RXSEL::_7_8),
     }
 }
 
@@ -139,6 +132,7 @@ impl State {
 }
 
 pub(crate) trait SealedInstance {
+    fn regs() -> pac::UART0::UART0;
     fn state() -> &'static State;
 }
 
@@ -150,8 +144,11 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
 }
 
 macro_rules! impl_uart {
-    ($type:ident, $irq:ident) => {
+    ($type:ident, $pac_type:ident, $irq:ident) => {
         impl crate::uart::SealedInstance for peripherals::$type {
+            fn regs() -> pac::UART0::UART0 {
+                pac::$pac_type
+            }
             fn state() -> &'static crate::uart::State {
                 static STATE: crate::uart::State = crate::uart::State::new();
                 &STATE
@@ -204,28 +201,27 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
+        let r = T::regs();
         let s = T::state();
 
         // Masked Interrupt Status
-        let mis = UART.mis.read();
+        let mis = r.MIS().read();
 
         // clear interrupt flags
-        UART.icr.write(|w| {
-            w.rtic() // receive timeout
-                .set_bit()
-                .rxic() // receive
-                .set_bit()
+        r.ICR().write(|w| {
+            w.set_RTIC(true); // receive timeout
+            w.set_RXIC(true); // receive
         });
 
         // UART write complete.
         if UDMA.uart_request_done_tx() {
             UDMA.uart_disable_tx();
             UDMA.uart_request_done_tx_mask();
-            UART.dmactl.modify(|_r, w| w.txdmae().clear_bit());
+            r.DMACTL().modify(|w| w.set_TXDMAE(false));
             s.tx_waker.wake();
         }
         // UART rx FIFO limit reached OR rx timeout.
-        if mis.rxmis().bit_is_set() || mis.rtmis().bit_is_set() {
+        if mis.RXMIS() || mis.RTMIS() {
             // Mask RX and RT irqs. They should be unmasked by the reader
             // when he ends reading data from the FIFO (e.g. when there is no more data in FIFO).
             disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
@@ -344,15 +340,15 @@ pub struct UartFullTx<T: Instance> {
 
 impl<T: Instance> UartFullTx<T> {
     fn tx_fifo_empty(&self) -> bool {
-        UART.fr.read().txfe().bit_is_set()
+        T::regs().FR().read().TXFE()
     }
 
     fn tx_fifo_full(&self) -> bool {
-        UART.fr.read().txff().bit_is_set()
+        T::regs().FR().read().TXFF()
     }
 
     fn dma_start_tx(&self) {
-        UART.dmactl.modify(|_r, w| w.txdmae().set_bit());
+        T::regs().DMACTL().modify(|w| w.set_TXDMAE(true));
     }
 
     /// Validates `buffer` and returns the address uDMA should read it from.
@@ -387,7 +383,7 @@ impl<T: Instance> UartFullTx<T> {
         // mid-execution, the drop will "fire".
         let drop = OnDrop::new(move || {
             UDMA.uart_disable_tx();
-            UART.dmactl.modify(|_r, w| w.txdmae().clear_bit());
+            T::regs().DMACTL().modify(|w| w.set_TXDMAE(false));
             UDMA.uart_request_done_tx_clear();
             UDMA.uart_request_done_tx_unmask();
         });
@@ -479,6 +475,7 @@ impl<'a, T: Instance> UartFull<'a, T> {
 
     #[inline]
     fn initialize(config: Config) {
+        let r = T::regs();
         UDMA.enable();
 
         // Setup IO pins for UART0.
@@ -510,7 +507,7 @@ impl<'a, T: Instance> UartFull<'a, T> {
         // Configure RX interrupts. TX interrupts are disabled by default as TX is handled by uDMA.
         disable_uart_irqs(driverlib::UART_INT_TX);
         if let Some(fill_val) = fifo_fill_level_to_variant(config.fifo_fill_level) {
-            UART.ifls.modify(|_r, w| w.rxsel().variant(fill_val));
+            r.IFLS().modify(|w| w.set_RXSEL(fill_val));
             enable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
         }
 
@@ -547,17 +544,18 @@ impl<'a, T: Instance> UartFull<'a, T> {
     /// This function will wait until there is no more data to send,
     /// but it won't wait for the RX FIFO (data might be lost).
     pub fn configure_rx_interrupts(&self, fill_level: FIFOFillLevel) {
+        let r = T::regs();
         // Disable UART0 before modifying control registers, as per TI-TRM 19.4.
         UartFull::<T>::disable_uart();
 
         match fifo_fill_level_to_variant(fill_level) {
-            Some(fl) => UART.ifls.modify(|_r, w| w.rxsel().variant(fl)),
+            Some(fl) => r.IFLS().modify(|w| w.set_RXSEL(fl)),
             None => {
                 // Disable interrupts:
                 // - receive interrupt
                 // - reception timeout interrupt
                 disable_uart_irqs(driverlib::UART_INT_RX | driverlib::UART_INT_RT);
-                UART.ctl.write(|w| w.uarten().set_bit());
+                r.CTL().modify(|w| w.set_UARTEN(vals::UARTEN::EN));
                 return;
             }
         };
@@ -601,13 +599,13 @@ impl<'a, T: Instance> UartFull<'a, T> {
     #[allow(unused)]
     /// Check if RX FIFO is empty
     fn rx_fifo_empty(&self) -> bool {
-        UART.fr.read().rxfe().bit_is_set()
+        T::regs().FR().read().RXFE()
     }
 
     #[allow(unused)]
     /// Check if RX FIFO is full
     fn rx_fifo_full(&self) -> bool {
-        UART.fr.read().rxff().bit_is_set()
+        T::regs().FR().read().RXFF()
     }
 
     #[allow(unused)]
