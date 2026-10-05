@@ -27,8 +27,8 @@ fn main() {
         .unwrap();
     println!("cargo:rustc-link-search={}", out.display());
 
-    println!("cargo:rerun-if-changed=memory.x");
-    println!("cargo:rerun-if-changed=my_link.x");
+    println!("cargo:rerun-if-changed=../ti-cc2650/memory.x");
+    println!("cargo:rerun-if-changed=../ti-cc2650/my_link.x");
 
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tmy_link.x");

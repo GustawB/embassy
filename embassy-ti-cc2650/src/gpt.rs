@@ -70,7 +70,7 @@ pub(crate) trait SealedInstance {
     fn state() -> &'static State;
 }
 
-/// AON_RTC peripheral instance.
+/// GPT peripheral instance.
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
     /// Interrupt for this peripheral.
@@ -174,7 +174,7 @@ impl<'a, T: Instance> Gpt<'a, T> {
             // Stop GPT when debugger halts the program.
             GPT0.ctl.write(|w| w.tastall().set_bit());
 
-            // Enable mathc and time-out interrupts.
+            // Enable match and time-out interrupts.
             GPT0.imr.modify(|_r, w| w.tamim().en().tatoim().en());
         };
 

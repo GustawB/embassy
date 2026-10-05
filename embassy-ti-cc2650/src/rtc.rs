@@ -186,11 +186,11 @@ impl<'a, T: Instance> Rtc<'a, T> {
 
         self.state.set_next_deadline(next_deadline);
 
+        compiler_fence(Ordering::SeqCst);
+
         unsafe {
             driverlib::AONRTCChannelEnable(driverlib::AON_RTC_CH0);
         };
-
-        compiler_fence(Ordering::SeqCst);
 
         if deadline_out_of_range(curr_secs, next_secs) {
             unsafe { driverlib::AONRTCCompareValueSet(driverlib::AON_RTC_CH0, u32::MAX) };
@@ -221,12 +221,6 @@ impl<'a, T: Instance> Rtc<'a, T> {
         })
         .await;
         drop.defuse();
-    }
-
-    /// Returns seconds and milliseconds passed since boot.
-    #[inline]
-    pub fn get_current_time(&self) -> (u32, u32) {
-        get_curr_time()
     }
 
     /// Sleeps for the specified amount of time in seconds.
@@ -262,6 +256,8 @@ impl<'a, T: Instance> Rtc<'a, T> {
     /// Wake up at the specified time.
     /// Time starts at zero from boot.
     pub async fn wakeup_at(&mut self, seconds: u32, milliseconds: u32) {
+        // Same as in sleep(): overflowing 2^32 seconds deserves a panic.
+        let seconds = seconds + milliseconds / 1000;
         let (curr_secs, curr_subsecs) = get_curr_time();
         let combined_curr_time = combine_time(curr_secs, curr_subsecs);
         let next_subsecs = ((milliseconds % 1000) as u64 * (1u64 << 32) / 1000) as u32;
