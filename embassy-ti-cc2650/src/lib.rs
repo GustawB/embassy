@@ -8,11 +8,17 @@ use crate::prcm::Prcm;
 
 mod ccfg;
 pub mod chip;
+#[cfg(feature = "debug-print")]
+pub mod debug_print;
 pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
 pub mod prcm;
 pub mod rtc;
+#[cfg(feature = "debug-print")]
+mod scif_driver;
+#[cfg(feature = "debug-print")]
+mod scif_uart_emulator;
 mod time_driver;
 pub mod uart;
 pub mod udma;
