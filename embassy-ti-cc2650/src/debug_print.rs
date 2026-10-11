@@ -123,10 +123,10 @@ pub fn debug_print(debug_message: &[u8]) {
             ScifUart::scif_uart_tx_put_chars(&lost_buffer[..msg_len], msg_len as u32);
         };
         bytes_lost = 0;
+        BYTES_LOST.store(bytes_lost, Ordering::Relaxed);
     }
 
     if debug_msg_len == 0 {
-        BYTES_LOST.store(bytes_lost, Ordering::Relaxed);
         return;
     }
 

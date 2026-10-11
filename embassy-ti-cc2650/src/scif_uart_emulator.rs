@@ -265,8 +265,6 @@ impl ScifUart {
             r = self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID);
             debug_assert!(matches!(r, SCIFResult::Success));
 
-            self.scif.scif_execute_tasks_once_nbl(1 << SCIF_UART_EMULATOR_TASK_ID);
-
             self.uart_set_baud_rate(SCIF_UART_BAUD_RATE);
         }
     }
