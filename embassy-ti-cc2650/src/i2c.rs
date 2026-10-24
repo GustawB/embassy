@@ -2,9 +2,9 @@
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
-use crate::pac;
 use crate::{chip::interrupt, driverlib};
 use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
@@ -18,11 +18,21 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     unsafe fn on_interrupt() {
         unsafe {
             let master_irq_status = driverlib::I2CMasterIntStatus(driverlib::I2C0_BASE, true);
-            let slave_irq_status = driverlib::I2CSlaveIntStatus(driverlib::I2C0_BASE, true);
             driverlib::I2CMasterIntClear(driverlib::I2C0_BASE);
+            let slave_irq_status = driverlib::I2CSlaveIntStatus(driverlib::I2C0_BASE, true);
+            driverlib::I2CSlaveIntClear(driverlib::I2C0_BASE, slave_irq_status);
             let s = T::state();
             if master_irq_status {
                 s.master_waker.wake();
+            }
+            if slave_irq_status != 0 {
+                if slave_irq_status & driverlib::I2C_SLAVE_INT_START != 0 {
+                    s.start_condition.store(true, Ordering::Release);
+                }
+                if slave_irq_status & driverlib::I2C_SLAVE_INT_STOP != 0 {
+                    s.end_condition.store(true, Ordering::Release);
+                }
+                s.slave_waker.wake();
             }
         }
     }
@@ -38,6 +48,8 @@ pub trait Instance: SealedInstance + PeripheralType + 'static + Send {
 pub(crate) struct State {
     pub(crate) master_waker: AtomicWaker,
     pub(crate) slave_waker: AtomicWaker,
+    pub(crate) start_condition: AtomicBool,
+    pub(crate) end_condition: AtomicBool,
 }
 
 impl State {
@@ -45,6 +57,8 @@ impl State {
         Self {
             master_waker: AtomicWaker::new(),
             slave_waker: AtomicWaker::new(),
+            start_condition: AtomicBool::new(false),
+            end_condition: AtomicBool::new(false),
         }
     }
 }
@@ -56,9 +70,6 @@ pub(crate) trait SealedInstance {
 macro_rules! impl_i2c {
     ($type:ident, $pac_type:ident, $irq:ident) => {
         impl crate::i2c::SealedInstance for peripherals::$type {
-            fn regs() -> pac::I2C0::I2C0 {
-                pac::$pac_type
-            }
             fn state() -> &'static crate::i2c::State {
                 static STATE: crate::i2c::State = crate::i2c::State::new();
                 &STATE
@@ -82,12 +93,12 @@ pub enum MasterResult {
     ArLost,
 }
 
-pub struct I2C<'a, T: Instance> {
+pub struct I2CMaster<'a, T: Instance> {
     state: &'static State,
     _peri: Peri<'a, T>,
 }
 
-impl<'a, T: Instance> I2C<'a, T> {
+impl<'a, T: Instance> I2CMaster<'a, T> {
     pub fn new(
         i2c: Peri<'a, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
@@ -397,6 +408,83 @@ impl<'a, T: Instance> I2C<'a, T> {
 
             // Idle
             (buf.len(), MasterResult::Ok)
+        }
+    }
+}
+
+pub struct I2CSlave<'a, T: Instance> {
+    state: &'static State,
+    _peri: Peri<'a, T>,
+}
+
+impl<'a, T: Instance> I2CSlave<'a, T> {
+    pub fn new(
+        i2c: Peri<'a, T>,
+        slave_addr: u8,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
+    ) -> Self {
+        unsafe {
+            // Setup pins.
+            driverlib::IOCPinTypeI2c(driverlib::IOC_BASE, driverlib::IOID_18, driverlib::IOID_19);
+
+            // Initialize I2C slave.
+            driverlib::I2CSlaveInit(driverlib::I2C0_BASE, slave_addr);
+            driverlib::I2CSlaveIntEnable(
+                driverlib::I2C0_BASE,
+                driverlib::I2C_SLAVE_INT_STOP | driverlib::I2C_SLAVE_INT_START | driverlib::I2C_SLAVE_INT_DATA,
+            );
+        };
+
+        Self {
+            state: T::state(),
+            _peri: i2c,
+        }
+    }
+
+    pub async fn run(&self, read_callback: impl Fn(u8), write_callback: impl Fn() -> u8) {
+        loop {
+            // 1. Wait for the start condition
+            let _ = poll_fn(|cx| {
+                self.state.slave_waker.register(cx.waker());
+                if self
+                    .state
+                    .start_condition
+                    .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
+                    .is_err()
+                {
+                    return Poll::Pending;
+                }
+                Poll::Ready(())
+            })
+            .await;
+
+            // 2. Try to read data as long as there is no STOP condition.
+            loop {
+                let _ = poll_fn(|cx| {
+                    self.state.slave_waker.register(cx.waker());
+                    let slave_status = unsafe { driverlib::I2CSlaveStatus(driverlib::I2C0_BASE) };
+                    if slave_status & driverlib::I2C_SLAVE_ACT_RREQ != 0 {
+                        let data = unsafe { driverlib::I2CSlaveDataGet(driverlib::I2C0_BASE) };
+                        read_callback(data as u8);
+                        return Poll::Ready(());
+                    } else if slave_status & driverlib::I2C_SLAVE_ACT_TREQ != 0 {
+                        let data = write_callback();
+                        unsafe {
+                            driverlib::I2CSlaveDataPut(driverlib::I2C0_BASE, data);
+                        };
+                        return Poll::Ready(());
+                    } else if self
+                        .state
+                        .end_condition
+                        .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
+                        .is_ok()
+                    {
+                        return Poll::Ready(());
+                    }
+                    Poll::Pending
+                })
+                .await;
+            }
         }
     }
 }

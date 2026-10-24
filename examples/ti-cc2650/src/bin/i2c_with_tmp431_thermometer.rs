@@ -7,7 +7,7 @@ use embassy_ti_cc2650::{
     chip::peripherals,
     debug_print::{DebugPrint, debug_print},
     gpio::{Level, Output},
-    i2c::{self, I2C},
+    i2c::{self, I2CMaster},
 };
 use embassy_time::Timer;
 use panic_probe as _;
@@ -17,6 +17,7 @@ bind_interrupts!(struct Irqs {
 });
 
 const TMP431A_ADDR: u8 = 0x4C;
+#[allow(dead_code)]
 const TMP431B_ADDR: u8 = 0x4D;
 const CR1_WRITE: u8 = 0x09;
 const ONE_SHOT_REQUEST_WRITE_ADDR: u8 = 0x0F;
@@ -25,26 +26,26 @@ const TEMP_READ_ADDR: u8 = 0x00;
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
-    let i2c = I2C::new(p.I2C, Irqs);
+    let i2c_master = I2CMaster::new(p.I2C, Irqs);
     let mut _l = Output::new(p.P_06, Level::High);
     let _debug_print = DebugPrint::new(p.P_28, p.P_29);
 
     // Set configuration register 1 write address.
-    let _ = i2c.write_byte(TMP431A_ADDR, CR1_WRITE).await;
+    let _ = i2c_master.write_byte(TMP431A_ADDR, CR1_WRITE).await;
     // Set oneshot flag.
-    let _ = i2c.write_byte(TMP431A_ADDR, (1 << 6) | (1 << 2)).await;
+    let _ = i2c_master.write_byte(TMP431A_ADDR, (1 << 6) | (1 << 2)).await;
 
     let mut temp_buffer = [0u8; 3];
     loop {
         Timer::after_millis(1000).await;
         // Start one-shot request.
-        let _ = i2c.write_byte(TMP431A_ADDR, ONE_SHOT_REQUEST_WRITE_ADDR).await;
+        let _ = i2c_master.write_byte(TMP431A_ADDR, ONE_SHOT_REQUEST_WRITE_ADDR).await;
         Timer::after_millis(100).await;
         // Set temperature high byte read address.
-        let _ = i2c.write_byte(TMP431A_ADDR, TEMP_READ_ADDR).await;
+        let _ = i2c_master.write_byte(TMP431A_ADDR, TEMP_READ_ADDR).await;
         // Read temperature high byte.
         let mut tmp_byte = 0u8;
-        let _ = i2c.read_byte(TMP431A_ADDR, &mut tmp_byte).await;
+        let _ = i2c_master.read_byte(TMP431A_ADDR, &mut tmp_byte).await;
 
         for i in 0..3 {
             temp_buffer[i] = b'0';
