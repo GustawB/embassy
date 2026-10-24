@@ -1,5 +1,6 @@
 use crate::gpio::impl_pin;
 use crate::gpt::impl_gpt;
+use crate::i2c::impl_i2c;
 #[cfg(not(feature = "time-driver"))]
 use crate::rtc::impl_rtc;
 use crate::uart::impl_uart;
@@ -10,6 +11,7 @@ embassy_hal_internal::peripherals! {
     #[cfg(not(feature = "time-driver"))]
     AON_RTC,
     GPT0,
+    I2C,
 
     P_00,
     P_01,
@@ -52,6 +54,8 @@ impl_rtc!(AON_RTC, AON_RTC, AON_RTC);
 
 impl_gpt!(GPT0, GPT0, GPT0A);
 
+impl_i2c!(I2C, I2C0, I2C);
+
 impl_pin!(P_00, 0);
 impl_pin!(P_01, 1);
 impl_pin!(P_02, 2);
@@ -85,4 +89,4 @@ impl_pin!(P_29, 29);
 impl_pin!(P_30, 30);
 impl_pin!(P_31, 31);
 
-embassy_hal_internal::interrupt_mod!(UART0, AON_RTC, GPT0A, UDMA);
+embassy_hal_internal::interrupt_mod!(UART0, AON_RTC, GPT0A, UDMA, I2C);
