@@ -6,8 +6,7 @@ use embassy_ti_cc2650::{
     bind_interrupts,
     chip::peripherals,
     debug_print::{DebugPrint, debug_print},
-    i2c::Instance,
-    i2c::{self, I2CMaster, I2CSlave},
+    i2c::{self, Runner, new_master_slave},
 };
 use embassy_time::Timer;
 use panic_probe as _;
@@ -21,20 +20,22 @@ fn read_callback(data: u8) {
 }
 
 #[embassy_executor::task]
-async fn slave_task(slave: I2CSlave<T: Instance>) -> ! {
+async fn slave_task(runner: Runner<'static>) -> ! {
     loop {
-        slave.run(read_callback, || return 0).await;
+        runner.run(read_callback, || return 0).await;
     }
 }
 
 const SLAVE_ADDR: u8 = 0x69;
 
 #[embassy_executor::main]
-async fn main(_spawner: Spawner) {
+async fn main(spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
-    let i2c_master = I2CMaster::new(p.I2C, Irqs);
-    let i2c_slave = I2CSlave::new(p.I2C, SLAVE_ADDR, Irqs);
+    let (i2c_master, i2c_slave) = new_master_slave(p.I2C, SLAVE_ADDR, Irqs);
     let _debug_print = DebugPrint::new(p.P_28, p.P_29);
+
+    let runner = i2c_slave.into_runner();
+    spawner.spawn(slave_task(runner).unwrap());
 
     let hello = "Hello World!\n".as_bytes();
     loop {

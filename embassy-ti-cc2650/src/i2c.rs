@@ -95,12 +95,12 @@ pub enum MasterResult {
 
 pub struct I2CMaster<'a, T: Instance> {
     state: &'static State,
-    _peri: Peri<'a, T>,
+    _p: PhantomData<(&'a (), T)>,
 }
 
 impl<'a, T: Instance> I2CMaster<'a, T> {
-    pub fn new(
-        i2c: Peri<'a, T>,
+    pub(crate) fn new(
+        //_i2c_master: Peri<'a, T>,
         _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
     ) -> Self {
         unsafe {
@@ -115,7 +115,7 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
 
         Self {
             state: T::state(),
-            _peri: i2c,
+            _p: PhantomData,
         }
     }
 
@@ -412,33 +412,13 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
     }
 }
 
-pub struct I2CSlave<'a, T: Instance> {
-    state: &'static State,
-    _peri: Peri<'a, T>,
+pub struct Runner<'d> {
+    state: &'d State,
 }
 
-impl<'a, T: Instance> I2CSlave<'a, T> {
-    pub fn new(
-        i2c: Peri<'a, T>,
-        slave_addr: u8,
-        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
-    ) -> Self {
-        unsafe {
-            // Setup pins.
-            driverlib::IOCPinTypeI2c(driverlib::IOC_BASE, driverlib::IOID_18, driverlib::IOID_19);
-
-            // Initialize I2C slave.
-            driverlib::I2CSlaveInit(driverlib::I2C0_BASE, slave_addr);
-            driverlib::I2CSlaveIntEnable(
-                driverlib::I2C0_BASE,
-                driverlib::I2C_SLAVE_INT_STOP | driverlib::I2C_SLAVE_INT_START | driverlib::I2C_SLAVE_INT_DATA,
-            );
-        };
-
-        Self {
-            state: T::state(),
-            _peri: i2c,
-        }
+impl<'d> Runner<'d> {
+    pub(crate) fn new(state: &'static State) -> Self {
+        Self { state: state }
     }
 
     pub async fn run(&self, read_callback: impl Fn(u8), write_callback: impl Fn() -> u8) {
@@ -487,6 +467,63 @@ impl<'a, T: Instance> I2CSlave<'a, T> {
             }
         }
     }
+}
+
+pub struct I2CSlave<'a, T: Instance> {
+    runner: Runner<'a>,
+    _p: PhantomData<(&'a (), T)>,
+}
+
+impl<'a, T: Instance> I2CSlave<'a, T> {
+    pub(crate) fn new(
+        //_i2c: Peri<'a, T>,
+        slave_addr: u8,
+        _irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
+    ) -> Self {
+        unsafe {
+            // Setup pins.
+            driverlib::IOCPinTypeI2c(driverlib::IOC_BASE, driverlib::IOID_18, driverlib::IOID_19);
+
+            // Initialize I2C slave.
+            driverlib::I2CSlaveInit(driverlib::I2C0_BASE, slave_addr);
+            driverlib::I2CSlaveIntEnable(
+                driverlib::I2C0_BASE,
+                driverlib::I2C_SLAVE_INT_STOP | driverlib::I2C_SLAVE_INT_START | driverlib::I2C_SLAVE_INT_DATA,
+            );
+        };
+
+        Self {
+            runner: Runner::new(T::state()),
+            _p: PhantomData,
+        }
+    }
+
+    pub fn into_runner(self) -> Runner<'a> {
+        self.runner
+    }
+}
+
+pub fn new_master<'a, T: Instance>(
+    _i2c: Peri<'a, T>,
+    irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
+) -> I2CMaster<'a, T> {
+    I2CMaster::new(irq)
+}
+
+pub fn new_slave<'a, T: Instance>(
+    _i2c: Peri<'a, T>,
+    slave_addr: u8,
+    irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
+) -> I2CSlave<'a, T> {
+    I2CSlave::new(slave_addr, irq)
+}
+
+pub fn new_master_slave<'a, T: Instance>(
+    _i2c: Peri<'a, T>,
+    slave_addr: u8,
+    irq: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>> + 'a,
+) -> (I2CMaster<'a, T>, I2CSlave<'a, T>) {
+    (I2CMaster::new(irq), I2CSlave::new(slave_addr, irq))
 }
 
 use embassy_sync::waitqueue::AtomicWaker;

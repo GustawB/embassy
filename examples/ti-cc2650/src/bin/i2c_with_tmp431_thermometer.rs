@@ -7,7 +7,7 @@ use embassy_ti_cc2650::{
     chip::peripherals,
     debug_print::{DebugPrint, debug_print},
     gpio::{Level, Output},
-    i2c::{self, I2CMaster},
+    i2c::{self, new_master},
 };
 use embassy_time::Timer;
 use panic_probe as _;
@@ -26,7 +26,7 @@ const TEMP_READ_ADDR: u8 = 0x00;
 #[embassy_executor::main]
 async fn main(_spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
-    let i2c_master = I2CMaster::new(p.I2C, Irqs);
+    let i2c_master = new_master(p.I2C, Irqs);
     let mut _l = Output::new(p.P_06, Level::High);
     let _debug_print = DebugPrint::new(p.P_28, p.P_29);
 
