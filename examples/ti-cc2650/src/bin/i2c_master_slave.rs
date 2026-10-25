@@ -20,9 +20,9 @@ fn read_callback(data: u8) {
 }
 
 #[embassy_executor::task]
-async fn slave_task(runner: Runner<'static>) -> ! {
+async fn slave_task(mut runner: Runner<'static>) -> ! {
     loop {
-        runner.run(read_callback, || return 0).await;
+        runner.do_transaction(read_callback, || return 0).await;
     }
 }
 
@@ -31,7 +31,7 @@ const SLAVE_ADDR: u8 = 0x69;
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_ti_cc2650::init();
-    let (i2c_master, i2c_slave) = new_master_slave(p.I2C, SLAVE_ADDR, Irqs);
+    let (mut i2c_master, i2c_slave) = new_master_slave(p.I2C, SLAVE_ADDR, Irqs);
     let _debug_print = DebugPrint::new(p.P_28, p.P_29);
 
     let runner = i2c_slave.into_runner();

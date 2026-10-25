@@ -5,6 +5,7 @@ use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::Poll;
 
+use crate::interrupt::typelevel::Interrupt;
 use crate::{chip::interrupt, driverlib};
 use embassy_hal_internal::drop::OnDrop;
 use embassy_hal_internal::{Peri, PeripheralType};
@@ -113,6 +114,9 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
             driverlib::I2CMasterIntEnable(driverlib::I2C0_BASE);
         };
 
+        T::Interrupt::unpend();
+        unsafe { T::Interrupt::enable() };
+
         Self {
             state: T::state(),
             _p: PhantomData,
@@ -148,12 +152,49 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
     fn get_drop_guard(flag: u32) -> OnDrop<impl FnOnce() -> ()> {
         OnDrop::new(move || {
             unsafe {
-                driverlib::I2CMasterControl(driverlib::I2C0_BASE, flag);
+                // MCTRL must not be written while a command is in flight.
+                while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
+                // After lost arbitration the bus isn't ours, so no STOP.
+                if driverlib::I2CMasterErr(driverlib::I2C0_BASE) & driverlib::I2C_MASTER_ERR_ARB_LOST == 0 {
+                    driverlib::I2CMasterControl(driverlib::I2C0_BASE, flag);
+                }
             };
         })
     }
 
-    pub fn read_byte_blocking(&self, slave_addr: u8, buf: &mut u8) -> MasterResult {
+    fn first_send_cmd(len: usize) -> u32 {
+        if len == 1 {
+            driverlib::I2C_MASTER_CMD_SINGLE_SEND
+        } else {
+            driverlib::I2C_MASTER_CMD_BURST_SEND_START
+        }
+    }
+
+    fn next_send_cmd(i: usize, len: usize) -> u32 {
+        if i == len - 1 {
+            driverlib::I2C_MASTER_CMD_BURST_SEND_FINISH
+        } else {
+            driverlib::I2C_MASTER_CMD_BURST_SEND_CONT
+        }
+    }
+
+    fn first_recv_cmd(len: usize) -> u32 {
+        if len == 1 {
+            driverlib::I2C_MASTER_CMD_SINGLE_RECEIVE
+        } else {
+            driverlib::I2C_MASTER_CMD_BURST_RECEIVE_START
+        }
+    }
+
+    fn next_recv_cmd(i: usize, len: usize) -> u32 {
+        if i == len - 1 {
+            driverlib::I2C_MASTER_CMD_BURST_RECEIVE_FINISH
+        } else {
+            driverlib::I2C_MASTER_CMD_BURST_RECEIVE_CONT
+        }
+    }
+
+    pub fn read_byte_blocking(&mut self, slave_addr: u8, buf: &mut u8) -> MasterResult {
         unsafe {
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, true);
@@ -172,7 +213,7 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
         MasterResult::Ok
     }
 
-    pub fn write_byte_blocking(&self, slave_addr: u8, buf: u8) -> MasterResult {
+    pub fn write_byte_blocking(&mut self, slave_addr: u8, buf: u8) -> MasterResult {
         unsafe {
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, false);
@@ -188,7 +229,7 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
         }
     }
 
-    pub async fn read_byte(&self, slave_addr: u8, buf: &mut u8) -> MasterResult {
+    pub async fn read_byte(&mut self, slave_addr: u8, buf: &mut u8) -> MasterResult {
         unsafe {
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, true);
@@ -207,7 +248,7 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
         MasterResult::Ok
     }
 
-    pub async fn write_byte(&self, slave_addr: u8, buf: u8) -> MasterResult {
+    pub async fn write_byte(&mut self, slave_addr: u8, buf: u8) -> MasterResult {
         unsafe {
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, false);
@@ -227,36 +268,36 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
     /// buf size determines the amount of bytes to be read.
     /// Returns the number of bytes read, and in case of any errors,
     /// the error itself.
-    pub async fn read(&self, slave_addr: u8, buf: &mut [u8]) -> (usize, MasterResult) {
+    pub async fn read(&mut self, slave_addr: u8, buf: &mut [u8]) -> (usize, MasterResult) {
+        if buf.is_empty() {
+            return (0, MasterResult::Ok);
+        }
+
         unsafe {
-            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_RECEIVE_ERROR_STOP);
 
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, true);
             // Wait until master controller is not busy.
             self.await_master_completion().await;
-            // Write 0-1011 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_START);
+            // Write 0-111 (single byte) or 0-1011 (burst start) to MCTRL.
+            driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::first_recv_cmd(buf.len()));
+            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_RECEIVE_ERROR_STOP);
 
-            for i in 0usize..buf.len() {
+            for i in 1usize..buf.len() {
                 // Wait until master controller is not busy.
                 self.await_master_completion().await;
 
+                // The status refers to buf[i - 1].
                 let transaction_result = self.handle_transaction_result();
                 if transaction_result != MasterResult::Ok {
-                    return (i, transaction_result);
+                    return (i - 1, transaction_result);
                 }
                 // Read one byte.
-                buf[i] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
+                buf[i - 1] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
 
-                if i != buf.len() - 1 {
-                    // Write 0-1001 to MCTRL.
-                    driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_CONT);
-                }
+                // Write 0-101 (last byte, NACK) or 0-1001 to MCTRL.
+                driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::next_recv_cmd(i, buf.len()));
             }
-
-            // Write 0-101 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_FINISH);
             drop.defuse();
 
             // Wait until master controller is not busy.
@@ -266,42 +307,44 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
             if transaction_result != MasterResult::Ok {
                 return (buf.len() - 1, transaction_result);
             }
+            // Read the last byte.
+            buf[buf.len() - 1] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
 
             // Idle
             (buf.len(), MasterResult::Ok)
         }
     }
 
-    pub fn read_blocking(&self, slave_addr: u8, buf: &mut [u8]) -> (usize, MasterResult) {
+    pub fn read_blocking(&mut self, slave_addr: u8, buf: &mut [u8]) -> (usize, MasterResult) {
+        if buf.is_empty() {
+            return (0, MasterResult::Ok);
+        }
+
         unsafe {
-            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_RECEIVE_ERROR_STOP);
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, true);
             // Wait until master controller is not busy.
             while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
-            // Write 0-1011 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_START);
+            // Write 0-111 (single byte) or 0-1011 (burst start) to MCTRL.
+            driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::first_recv_cmd(buf.len()));
+            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_RECEIVE_ERROR_STOP);
 
-            for i in 0usize..buf.len() {
+            for i in 1usize..buf.len() {
                 // Wait until master controller is not busy.
                 while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
 
+                // The status refers to buf[i - 1].
                 let transaction_result = self.handle_transaction_result();
                 if transaction_result != MasterResult::Ok {
-                    return (i, transaction_result);
+                    return (i - 1, transaction_result);
                 }
 
                 // Transfer one byte.
-                buf[i] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
+                buf[i - 1] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
 
-                if i != buf.len() - 1 {
-                    // Write 0-1001 to MCTRL.
-                    driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_CONT);
-                }
+                // Write 0-101 (last byte, NACK) or 0-1001 to MCTRL.
+                driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::next_recv_cmd(i, buf.len()));
             }
-
-            // Write 0-101 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_RECEIVE_FINISH);
             drop.defuse();
 
             // Wait until master controller is not busy.
@@ -311,6 +354,8 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
             if transaction_result != MasterResult::Ok {
                 return (buf.len() - 1, transaction_result);
             }
+            // Read the last byte.
+            buf[buf.len() - 1] = driverlib::I2CMasterDataGet(driverlib::I2C0_BASE) as u8;
 
             // Idle
             (buf.len(), MasterResult::Ok)
@@ -320,37 +365,38 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
     /// Tries to write the contents of the buf over I2C, one byte at a time.
     /// Returns the number of bytes sent, and in case of any errors,
     /// the error itself.
-    pub async fn write(&self, slave_addr: u8, buf: &[u8]) -> (usize, MasterResult) {
+    pub async fn write(&mut self, slave_addr: u8, buf: &[u8]) -> (usize, MasterResult) {
+        if buf.is_empty() {
+            return (0, MasterResult::Ok);
+        }
+
         unsafe {
-            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_SEND_ERROR_STOP);
 
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, false);
             // Wait until master controller is not busy.
             self.await_master_completion().await;
-            // Write 0-011 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_START);
+            // START sends the address followed by MDR, so MDR must hold the first byte.
+            driverlib::I2CMasterDataPut(driverlib::I2C0_BASE, buf[0]);
+            // Write 0-111 (single byte) or 0-011 (burst start) to MCTRL.
+            driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::first_send_cmd(buf.len()));
+            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_SEND_ERROR_STOP);
 
-            for i in 0usize..buf.len() {
+            for i in 1usize..buf.len() {
                 // Wait until master controller is not busy.
                 self.await_master_completion().await;
 
+                // The status refers to buf[i - 1].
                 let transaction_result = self.handle_transaction_result();
                 if transaction_result != MasterResult::Ok {
-                    return (i, transaction_result);
+                    return (i - 1, transaction_result);
                 }
 
                 // Transfer one byte.
                 driverlib::I2CMasterDataPut(driverlib::I2C0_BASE, buf[i]);
-
-                if i != buf.len() - 1 {
-                    // Write 0-001 to MCTRL.
-                    driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_CONT);
-                }
+                // Write 0-101 (last byte) or 0-001 to MCTRL.
+                driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::next_send_cmd(i, buf.len()));
             }
-
-            // Write 0-101 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_FINISH);
             drop.defuse();
 
             // Wait until master controller is not busy.
@@ -367,36 +413,37 @@ impl<'a, T: Instance> I2CMaster<'a, T> {
     }
 
     // Same as write, but blocking.
-    pub fn write_blocking(&self, slave_addr: u8, buf: &[u8]) -> (usize, MasterResult) {
+    pub fn write_blocking(&mut self, slave_addr: u8, buf: &[u8]) -> (usize, MasterResult) {
+        if buf.is_empty() {
+            return (0, MasterResult::Ok);
+        }
+
         unsafe {
-            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_SEND_ERROR_STOP);
             // Set the receiving slave address.
             driverlib::I2CMasterSlaveAddrSet(driverlib::I2C0_BASE, slave_addr, false);
             // Wait until master controller is not busy.
             while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
-            // Write 0-011 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_START);
+            // START sends the address followed by MDR, so MDR must hold the first byte.
+            driverlib::I2CMasterDataPut(driverlib::I2C0_BASE, buf[0]);
+            // Write 0-111 (single byte) or 0-011 (burst start) to MCTRL.
+            driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::first_send_cmd(buf.len()));
+            let drop = Self::get_drop_guard(driverlib::I2C_MASTER_CMD_BURST_SEND_ERROR_STOP);
 
-            for i in 0usize..buf.len() {
+            for i in 1usize..buf.len() {
                 // Wait until master controller is not busy.
                 while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
 
+                // The status refers to buf[i - 1].
                 let transaction_result = self.handle_transaction_result();
                 if transaction_result != MasterResult::Ok {
-                    return (i, transaction_result);
+                    return (i - 1, transaction_result);
                 }
 
                 // Transfer one byte.
                 driverlib::I2CMasterDataPut(driverlib::I2C0_BASE, buf[i]);
-
-                if i != buf.len() - 1 {
-                    // Write 0-001 to MCTRL.
-                    driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_CONT);
-                }
+                // Write 0-101 (last byte) or 0-001 to MCTRL.
+                driverlib::I2CMasterControl(driverlib::I2C0_BASE, Self::next_send_cmd(i, buf.len()));
             }
-
-            // Write 0-101 to MCTRL.
-            driverlib::I2CMasterControl(driverlib::I2C0_BASE, driverlib::I2C_MASTER_CMD_BURST_SEND_FINISH);
             drop.defuse();
             // Wait until master controller is not busy.
             while driverlib::I2CMasterBusy(driverlib::I2C0_BASE) {}
@@ -421,50 +468,55 @@ impl<'d> Runner<'d> {
         Self { state: state }
     }
 
-    pub async fn run(&self, read_callback: impl Fn(u8), write_callback: impl Fn() -> u8) {
-        loop {
-            // 1. Wait for the start condition
-            let _ = poll_fn(|cx| {
+    /// Not cancel-safe: dropping the future mid-transaction loses the bytes in flight.
+    /// The bus stays stretched until the next call resumes servicing it.
+    pub async fn do_transaction(&mut self, read_callback: impl Fn(u8), write_callback: impl Fn() -> u8) {
+        // 1. Wait for the start condition, or resume a transaction a dropped call left pending.
+        let _ = poll_fn(|cx| {
+            self.state.slave_waker.register(cx.waker());
+            let slave_status = unsafe { driverlib::I2CSlaveStatus(driverlib::I2C0_BASE) };
+            if slave_status & (driverlib::I2C_SLAVE_ACT_RREQ | driverlib::I2C_SLAVE_ACT_TREQ) != 0 {
+                return Poll::Ready(());
+            }
+            if self
+                .state
+                .start_condition
+                .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
+                .is_err()
+            {
+                return Poll::Pending;
+            }
+            Poll::Ready(())
+        })
+        .await;
+
+        // 2. Try to read data as long as there is no STOP condition.
+        let mut stop_condition = false;
+        while !stop_condition {
+            stop_condition = poll_fn(|cx| {
                 self.state.slave_waker.register(cx.waker());
-                if self
+                let slave_status = unsafe { driverlib::I2CSlaveStatus(driverlib::I2C0_BASE) };
+                if slave_status & driverlib::I2C_SLAVE_ACT_RREQ != 0 {
+                    let data = unsafe { driverlib::I2CSlaveDataGet(driverlib::I2C0_BASE) };
+                    read_callback(data as u8);
+                    return Poll::Ready(false);
+                } else if slave_status & driverlib::I2C_SLAVE_ACT_TREQ != 0 {
+                    let data = write_callback();
+                    unsafe {
+                        driverlib::I2CSlaveDataPut(driverlib::I2C0_BASE, data);
+                    };
+                    return Poll::Ready(false);
+                } else if self
                     .state
-                    .start_condition
+                    .end_condition
                     .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
-                    .is_err()
+                    .is_ok()
                 {
-                    return Poll::Pending;
+                    return Poll::Ready(true);
                 }
-                Poll::Ready(())
+                Poll::Pending
             })
             .await;
-
-            // 2. Try to read data as long as there is no STOP condition.
-            loop {
-                let _ = poll_fn(|cx| {
-                    self.state.slave_waker.register(cx.waker());
-                    let slave_status = unsafe { driverlib::I2CSlaveStatus(driverlib::I2C0_BASE) };
-                    if slave_status & driverlib::I2C_SLAVE_ACT_RREQ != 0 {
-                        let data = unsafe { driverlib::I2CSlaveDataGet(driverlib::I2C0_BASE) };
-                        read_callback(data as u8);
-                        return Poll::Ready(());
-                    } else if slave_status & driverlib::I2C_SLAVE_ACT_TREQ != 0 {
-                        let data = write_callback();
-                        unsafe {
-                            driverlib::I2CSlaveDataPut(driverlib::I2C0_BASE, data);
-                        };
-                        return Poll::Ready(());
-                    } else if self
-                        .state
-                        .end_condition
-                        .compare_exchange(true, false, Ordering::Acquire, Ordering::SeqCst)
-                        .is_ok()
-                    {
-                        return Poll::Ready(());
-                    }
-                    Poll::Pending
-                })
-                .await;
-            }
         }
     }
 }
@@ -491,6 +543,9 @@ impl<'a, T: Instance> I2CSlave<'a, T> {
                 driverlib::I2C_SLAVE_INT_STOP | driverlib::I2C_SLAVE_INT_START | driverlib::I2C_SLAVE_INT_DATA,
             );
         };
+
+        T::Interrupt::unpend();
+        unsafe { T::Interrupt::enable() };
 
         Self {
             runner: Runner::new(T::state()),
