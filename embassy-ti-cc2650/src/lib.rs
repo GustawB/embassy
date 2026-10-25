@@ -13,6 +13,7 @@ pub mod debug_print;
 pub mod driverlib;
 pub mod gpio;
 pub mod gpt;
+pub mod i2c;
 pub mod prcm;
 pub mod rtc;
 #[cfg(feature = "debug-print")]
